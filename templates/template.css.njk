@@ -1,0 +1,90 @@
+/*--------------------------------
+
+{{fontName}} icon font
+Generated using nucleoapp.com
+
+-------------------------------- */
+
+{% if encode %}@font-face {
+  font-family: '{{fontName}}';
+  src: url(data:font/opentype;charset=utf-8;base64,{{base64opentype}});
+  src: url(data:font/x-font-woff;charset=utf-8;base64,{{base64woff}}) format('woff'),
+    url(data:font/truetype;charset=utf-8;base64,{{base64ttf}}) format('truetype');
+}{% else %}@font-face {
+  font-family: '{{fontName}}';
+  src: url('../fonts/{{fontName}}.eot');
+  src: url('../fonts/{{fontName}}.eot') format('embedded-opentype'),
+       url('../fonts/{{fontName}}.woff2') format('woff2'),
+       url('../fonts/{{fontName}}.woff') format('woff'),
+       url('../fonts/{{fontName}}.ttf') format('truetype'),
+       url('../fonts/{{fontName}}.svg') format('svg');
+}{% endif %}
+
+/* base class */
+.{{classBase}} {
+  display: inline-block;
+  font: normal normal normal 1em/1 '{{fontName}}';
+  color: inherit;
+  flex-shrink: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* size examples - relative units */
+.{{classBase}}-sm {
+  font-size: 0.8em;
+}
+
+.{{classBase}}-lg {
+  font-size: 1.2em;
+}
+
+/* size examples - absolute units */
+.{{classBase}}-16 {
+  font-size: 16px;
+}
+
+.{{classBase}}-32 {
+  font-size: 32px;
+}
+
+/* rotate the icon infinitely */
+.{{classBase}}-is-spinning {
+  animation: {{classBase}}-spin 1s infinite linear;
+}
+
+@keyframes {{classBase}}-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* transform */
+.{{classBase}}-rotate-90 {
+  transform: rotate(90deg);
+}
+
+.{{classBase}}-rotate-180 {
+  transform: rotate(180deg);
+}
+
+.{{classBase}}-rotate-270 {
+  transform: rotate(270deg);
+}
+
+.{{classBase}}-flip-y {
+  transform: scaleY(-1);
+}
+
+.{{classBase}}-flip-x {
+  transform: scaleX(-1);
+}
+
+/* icons */{% for glyph in glyphs%}
+.{{ className }}-{{ glyph.name }}::before {
+  content: "\{{ glyph.unicode[0].charCodeAt(0).toString(16) }}";
+}
+{% endfor %}

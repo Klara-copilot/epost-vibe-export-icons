@@ -1,0 +1,22 @@
+{
+  "name": "vibe_icon",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "export": "node nucleo-export.js",
+    "watch":  "node nucleo-watch.js",
+    "test":   "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "fs-extra": "^11.3.4",
+    "nunjucks": "^3.2.4",
+    "svgo": "^3.3.3",
+    "webfont": "^11.2.26"
+  }
+}

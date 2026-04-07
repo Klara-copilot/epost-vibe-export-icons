@@ -1,0 +1,14 @@
+/* icons */
+$icons: ({% for glyph in glyphs%}
+  '{{ glyph.name }}': '{{ glyph.unicode[0].codePointAt(0).toString(16) }}',{% endfor %}
+);
+
+@function unicode($str) {
+  @return string.unquote("\"\\#{$str}\"");
+}
+
+@each $name, $code in $icons {
+  .{{ className }}-#{""+$name}::before {
+    content: unicode($code);
+  }
+}
