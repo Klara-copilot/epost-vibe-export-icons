@@ -5,14 +5,16 @@
   "main": "index.js",
   "scripts": {
     "export": "node nucleo-export.js",
-    "watch":  "node nucleo-watch.js",
-    "test":   "echo \"Error: no test specified\" && exit 1"
+    "watch": "node nucleo-watch.js",
+    "cli": "node export-cli.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@inquirer/prompts": "^7.10.1",
     "chokidar": "^3.6.0",
     "fs-extra": "^11.3.4",
     "nunjucks": "^3.2.4",
