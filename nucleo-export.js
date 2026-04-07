@@ -499,6 +499,7 @@ async function main() {
     // className must NOT have a trailing hyphen; the template adds the separator.
     className:       classprefix.replace(/-$/, ''),   // "st" → .st-tagname
     classBase:       classnamebase,                   // "stg" → .stg { base class }
+    ligatures,
     fontPath:        '../fonts/',
     encode,
     base64opentype:  encodedFont.eot,
@@ -514,15 +515,20 @@ async function main() {
     cacheString: Date.now(),
   };
 
-  const cssOut  = renderTemplate('css',     tplContext);
-  const scssOut = renderTemplate('scss',    tplContext);
-  const lessOut = renderTemplate('less',    tplContext);
-  const htmlOut = renderTemplate('cssdemo', tplContext);
+  const cssOut     = renderTemplate('css',     tplContext);
+  const scssOut    = renderTemplate('scss',    tplContext);
+  const lessOut    = renderTemplate('less',    tplContext);
+  const htmlOut    = renderTemplate('html',    tplContext);
+  const cssDemoOut = renderTemplate('cssdemo', tplContext);
 
-  if (cssOut)  fs.writeFileSync(path.join(OUTPUT_DIR, 'css',  'icons.css'),  cssOut,  'utf8');
-  if (scssOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'scss', 'icons.scss'), scssOut, 'utf8');
-  if (lessOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'less', 'icons.less'), lessOut, 'utf8');
-  if (htmlOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'demo.html'),           htmlOut, 'utf8');
+  if (cssOut)     fs.writeFileSync(path.join(OUTPUT_DIR, 'css',  'icons.css'),  cssOut,  'utf8');
+  if (scssOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'scss', 'icons.scss'), scssOut, 'utf8');
+  if (lessOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'less', 'icons.less'), lessOut, 'utf8');
+  if (htmlOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'demo.html'),          htmlOut, 'utf8');
+  if (cssDemoOut) {
+    fse.ensureDirSync(path.join(OUTPUT_DIR, 'demo', 'css'));
+    fs.writeFileSync(path.join(OUTPUT_DIR, 'demo', 'css', 'style.css'), cssDemoOut, 'utf8');
+  }
 
   // ── unicodesMap.json ─────────────────────────────────────────────────────────
   fs.writeFileSync(
@@ -541,6 +547,7 @@ async function main() {
   console.log(`  less/icons.less`);
   console.log(`  unicodesMap.json`);
   console.log(`  demo.html`);
+  console.log(`  demo/css/style.css`);
   console.log(`\n  Output: ${OUTPUT_DIR}`);
 }
 
