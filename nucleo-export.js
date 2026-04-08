@@ -358,8 +358,19 @@ async function traceStrokedSvg(fontSvgString, iconName) {
   const RENDER_SIZE = 256;
   const { Resvg } = getResvg();
 
+  // Stroke-only icons: the source SVG had fill="none" on its wrapper group, but
+  // buildFontSvg sets fill="#111111" on that wrapper.  When the paths don't have
+  // their own fill attribute they inherit "#111111", making them render as solid
+  // filled shapes instead of stroke outlines.  Potrace then traces a filled blob
+  // instead of clean outline curves, producing only 1 subpath instead of many.
+  // Fix: reset the wrapper group's fill to "none" before rasterizing.
+  const svgForRender = fontSvgString.replace(
+    /(class="nc-icon-wrapper"[^>]*)fill="[^"]*"/,
+    '$1fill="none"'
+  );
+
   // Render the 256×256 font intermediate SVG to RGBA pixels
-  const resvg = new Resvg(fontSvgString, {
+  const resvg = new Resvg(svgForRender, {
     fitTo: { mode: 'width', value: RENDER_SIZE },
   });
   const rendered = resvg.render();
