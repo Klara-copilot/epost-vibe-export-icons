@@ -34,6 +34,8 @@ const fse      = require('fs-extra');
 const os       = require('os');
 const nunjucks = require('nunjucks');
 const webfont  = require('webfont').default;
+const { optimize: svgoOptimize } = require('svgo');
+const { SVGPathData, SVGPathDataTransformer } = require('svg-pathdata');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +47,43 @@ const OUTPUT_DIR = process.argv[3] || process.env.OUTPUT_DIR
 
 // Templates copied from the Nucleo app.asar bundle (node_modules/webfont/templates/)
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
+
+// ─── SVGO Preprocessing ───────────────────────────────────────────────────────
+// NucleoApp applies SVGO to every source SVG before building font intermediates.
+// Plugin list reverse-engineered from NucleoApp's bundled JS (chunk-common.*.js):
+//   new SVGO({ full: true, plugins: [...] })
+// Translated here to SVGO v3 API (full:true → explicit plugin list).
+
+const NUCLEO_SVGO_PLUGINS = [
+  'cleanupAttrs',
+  'removeDoctype',
+  'removeXMLProcInst',
+  'removeComments',
+  'removeMetadata',
+  'removeTitle',          // NucleoApp: { removeTitle: true }
+  'removeDesc',
+  'removeUselessDefs',
+  'removeEditorsNSData',
+  'removeEmptyAttrs',
+  'removeHiddenElems',
+  'removeEmptyText',
+  'removeEmptyContainers',
+  'cleanupEnableBackground',
+  'convertStyleToAttrs',
+  'convertColors',
+  'removeNonInheritableGroupAttrs',
+  'removeUnusedNS',
+  'cleanupNumericValues',
+  'collapseGroups',
+  'removeRasterImages',
+  'convertShapeToPath',
+  'convertTransform',
+];
+
+function optimizeSourceSvg(svgString) {
+  const result = svgoOptimize(svgString, { plugins: NUCLEO_SVGO_PLUGINS });
+  return result.data;
+}
 
 // ─── Name Normalization ───────────────────────────────────────────────────────
 // NucleoApp normalizes icon names: spaces → hyphens, duplicate hyphens collapsed.
@@ -69,6 +108,39 @@ function placeToHexPrefix(place) {
   return 'u' + placeToUnicode(place).toString(16).toLowerCase();
 }
 
+// ─── Path H/V Normalization ───────────────────────────────────────────────────
+// svg-pathdata's matrix() transform does not correctly handle H (horizontal-line)
+// and V (vertical-line) commands when the matrix contains rotation/skew — it
+// treats them as standalone x/y values instead of expanding them to full (x,y)
+// points first.  This manifests when SVGO's convertShapeToPath converts a
+// <rect transform="matrix(…)"> into a <path transform="rotate(…)"> whose `d`
+// uses H/V shorthands.  svgicons2svgfont later applies the combined
+// scale×rotate matrix via svg-pathdata and produces astronomically wrong coords.
+//
+// Fix: for any <path> element in the intermediate SVG that still carries a
+// transform attribute, expand its H/V commands to full L commands before
+// svgicons2svgfont processes the file.  Pure scale/translate transforms in the
+// group wrapper are handled correctly without this fix.
+
+function normalizeHVInTransformedPaths(svgContent) {
+  // Match opening <path …> tags (after self-closing → open/close conversion).
+  return svgContent.replace(/<path\b([^>]*)>/g, (match, attrs) => {
+    // Only touch paths that carry a transform attribute.
+    if (!attrs.includes('transform=')) return match;
+    const dMatch = attrs.match(/\bd="([^"]*)"/);
+    if (!dMatch) return match;
+    try {
+      const normalized = new SVGPathData(dMatch[1])
+        .toAbs()
+        .transform(SVGPathDataTransformer.NORMALIZE_HVZ(true, true, true))
+        .encode();
+      return '<path' + attrs.replace(/\bd="[^"]*"/, `d="${normalized}"`) + '>';
+    } catch (_) {
+      return match; // leave untouched on parse error
+    }
+  });
+}
+
 // ─── SVG Transform for Font Pipeline ─────────────────────────────────────────
 // NucleoApp converts the project SVG (viewBox="0 0 {grid} {grid}", no explicit
 // width/height) into a 256×256 SVG with a scaled wrapper, for svgicons2svgfont.
@@ -80,7 +152,10 @@ function placeToHexPrefix(place) {
 //            </g>
 //          </svg>
 //
-// Verified by comparing icons_big/ intermediates against source SVGs.
+// After SVGO preprocessing, the source SVG structure varies:
+//   • Single inner element → collapseGroups moves class="nc-icon-wrapper" to that element
+//   • Multiple inner elements → group is preserved with class="nc-icon-wrapper"
+// In both cases we strip the wrapper and rebuild it with the correct attributes.
 
 function buildFontSvg(sourceSvg, iconName, primaryColor, grid) {
   const scale = 256 / grid;
@@ -93,30 +168,144 @@ function buildFontSvg(sourceSvg, iconName, primaryColor, grid) {
   // Convert self-closing tags to open+close (required by svgicons2svgfont)
   svg = svg.replace(/<([a-zA-Z][a-zA-Z0-9]*)((?:\s[^>]*)?)\s*\/>/g, '<$1$2></$1>');
 
-  // Rebuild <svg> with width/height=256, drop viewBox
-  svg = svg.replace(/<svg([^>]*)>/, (_, attrs) => {
-    attrs = attrs
-      .replace(/\s*viewBox="[^"]*"/g, '')
-      .replace(/\s*width="[^"]*"/g, '')
-      .replace(/\s*height="[^"]*"/g, '');
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"${attrs}>`;
-  });
+  // Extract inner content (everything between <svg…> and </svg>)
+  const innerMatch = svg.match(/<svg[^>]*>([\s\S]*)<\/svg>/i);
+  let inner = innerMatch ? innerMatch[1] : '';
 
-  // Add fill + transform to the nc-icon-wrapper <g>
-  svg = svg.replace(
-    /<g class="nc-icon-wrapper"([^>]*)>/,
-    `<g class="nc-icon-wrapper" fill="${primaryColor}" transform="scale(${scale})"$1>`
-  );
+  // Strip the nc-icon-wrapper group element, keeping its children.
+  // After SVGO collapseGroups, the nc-icon-wrapper class may end up on a child
+  // element rather than a <g> — handle both cases.
+  //
+  // Case A: <g [fill="none"] class="nc-icon-wrapper" …>…children…</g>
+  // Case B: <el class="nc-icon-wrapper" …/>  (group collapsed onto single child)
+  //
+  // For Case A we unwrap by replacing the <g> tag pair with just its children.
+  // We count nesting depth so inner </g> tags are not confused with the wrapper's.
+  inner = unwrapNucleoGroup(inner);
 
-  // Ensure <title> exists (svgicons2svgfont reads it for glyph name)
-  if (!svg.includes('<title>')) {
-    svg = svg.replace(
-      /<g class="nc-icon-wrapper"([^>]*)>/,
-      `<g class="nc-icon-wrapper"$1><title>${iconName}</title>`
-    );
+  // Remove any residual class="nc-icon-wrapper" on individual elements (Case B above).
+  inner = inner.replace(/\s*class="nc-icon-wrapper"/g, '');
+
+  // Strip any <title> that survived (we add our own for svgicons2svgfont glyph naming).
+  inner = inner.replace(/<title>[^<]*<\/title>/g, '').trim();
+
+  // Normalize H/V commands on paths that still carry a transform attribute.
+  // svg-pathdata's matrix() mishandles H/V with rotation — see comment above.
+  inner = normalizeHVInTransformedPaths(inner);
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">`,
+    `<g class="nc-icon-wrapper" fill="${primaryColor}" transform="scale(${scale})">`,
+    `<title>${iconName}</title>`,
+    inner,
+    `</g>`,
+    `</svg>`,
+  ].join('\n');
+}
+
+/**
+ * If the entire inner content is a single <g class="nc-icon-wrapper"…>…</g>
+ * wrapper, strip it and return just its children.  Handles any attribute order
+ * and correctly accounts for nested <g> depth so the first inner </g> is not
+ * mistaken for the wrapper's closing tag.
+ */
+function unwrapNucleoGroup(inner) {
+  const trimmed = inner.trim();
+
+  // Find the opening <g> tag that carries class="nc-icon-wrapper"
+  const openRe = /<g\b[^>]*\bclass="nc-icon-wrapper"[^>]*>/;
+  const openMatch = openRe.exec(trimmed);
+  if (!openMatch) return inner;   // no such group – nothing to unwrap
+
+  const openStart = openMatch.index;
+  const openEnd   = openStart + openMatch[0].length;
+
+  // Walk forward counting <g> open/close nesting to find the matching </g>
+  let depth = 1;
+  let i     = openEnd;
+  while (i < trimmed.length && depth > 0) {
+    // Look for the next tag boundary
+    const nextOpen  = trimmed.indexOf('<g',  i);
+    const nextClose = trimmed.indexOf('</g>', i);
+
+    if (nextClose === -1) break;  // malformed – give up
+
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      // Another <g> opens before the next </g>
+      depth++;
+      i = nextOpen + 2;  // skip past '<g'
+    } else {
+      depth--;
+      if (depth === 0) {
+        // Found the matching closing </g>
+        const children = trimmed.slice(openEnd, nextClose).trim();
+        // Re-assemble: content before the group + children + content after </g>
+        const before = trimmed.slice(0, openStart).trim();
+        const after  = trimmed.slice(nextClose + 4).trim();   // 4 = len('</g>')
+        return [before, children, after].filter(Boolean).join('\n');
+      }
+      i = nextClose + 4;
+    }
   }
 
-  return svg;
+  // Could not find matching close – return as-is
+  return inner;
+}
+
+// ─── SVG Font Post-processing ─────────────────────────────────────────────────
+
+/**
+ * webfont v11 unconditionally appends the icon name as a second unicode value
+ * (ligature) per glyph, regardless of the `ligatures` option.  This produces
+ * two <glyph> elements per icon (one for the PUA codepoint, one for the
+ * multi-character ligature sequence).  Strip the ligature glyphs so that only
+ * the single-codepoint glyphs remain, matching NucleoApp's SVG font output.
+ *
+ * Single codepoint:  unicode="&#xEA03;"           → keep
+ * Ligature:          unicode="&#x74;&#x61;&#x67;…" → remove
+ */
+function stripLigatureGlyphs(svgFont) {
+  // Split on every glyph opening tag; process each chunk individually.
+  const parts = svgFont.split('<glyph ');
+  const kept = [parts[0]];
+
+  for (let i = 1; i < parts.length; i++) {
+    const chunk = parts[i];
+    const uniMatch = chunk.match(/unicode="([^"]*)"/);
+    if (!uniMatch) {
+      kept.push('<glyph ' + chunk);
+      continue;
+    }
+    const unicode = uniMatch[1];
+    // Count distinct &#x…; entities in the unicode attribute value.
+    const entityCount = (unicode.match(/&#x[0-9a-fA-F]+;/g) || []).length;
+    if (entityCount <= 1) {
+      kept.push('<glyph ' + chunk);
+      // single codepoint – keep
+    }
+    // else: ligature (2+ entities) – silently drop
+  }
+
+  return kept.join('');
+}
+
+/**
+ * Insert a <metadata> block matching NucleoApp's SVG font header format,
+ * immediately after the opening <svg> tag.
+ */
+function injectMetadata(svgFont, meta) {
+  if (!meta || !meta.author) return svgFont;
+
+  const json = JSON.stringify({
+    author:      meta.author      || '',
+    description: meta.description || '',
+    version:     meta.version     || '',
+    copyright:   meta.copyright   || '',
+  }, null, '\t');
+
+  const block = `<metadata><json><![CDATA[${json}]]></json></metadata>\n`;
+
+  return svgFont.replace(/(<svg[^>]*>\n?)/, `$1${block}`);
 }
 
 // ─── Template Rendering ───────────────────────────────────────────────────────
@@ -228,11 +417,12 @@ async function main() {
     }
     usedNames.add(iconName);
 
-    const sourceSvg  = fs.readFileSync(srcPath, 'utf8');
-    const grid       = icon.grid || icon.width || 24;
-    const fontSvg    = buildFontSvg(sourceSvg, iconName, primaryColor, grid);
-    const hexPrefix  = placeToHexPrefix(icon.place);
-    const cssClass   = classprefix + iconName;
+    const rawSvg    = fs.readFileSync(srcPath, 'utf8');
+    const sourceSvg = optimizeSourceSvg(rawSvg);   // Phase 1: SVGO (NucleoApp-exact config)
+    const grid      = icon.grid || icon.width || 24;
+    const fontSvg   = buildFontSvg(sourceSvg, iconName, primaryColor, grid);
+    const hexPrefix = placeToHexPrefix(icon.place);
+    const cssClass  = classprefix + iconName;
     const unicodeVal = placeToUnicode(icon.place);
 
     fs.writeFileSync(path.join(tmpDir, `${hexPrefix}-${iconName}.svg`), fontSvg, 'utf8');
@@ -261,6 +451,17 @@ async function main() {
     ligatures,
   });
 
+  // ── Post-process SVG font (Phase 2) ──────────────────────────────────────────
+  // webfont unconditionally emits a ligature <glyph> alongside each codepoint
+  // glyph (regardless of the `ligatures` flag). Strip them to match NucleoApp.
+  let svgFont = result.svg.toString('utf8');
+  svgFont = stripLigatureGlyphs(svgFont);
+
+  // Inject <metadata> block matching NucleoApp's SVG font header.
+  if (iconfont.metadataEnable && iconfont.metadata) {
+    svgFont = injectMetadata(svgFont, iconfont.metadata);
+  }
+
   // ── Write font files ─────────────────────────────────────────────────────────
   fse.ensureDirSync(path.join(OUTPUT_DIR, 'fonts'));
   fse.ensureDirSync(path.join(OUTPUT_DIR, 'css'));
@@ -268,12 +469,13 @@ async function main() {
   fse.ensureDirSync(path.join(OUTPUT_DIR, 'less'));
   fse.ensureDirSync(path.join(OUTPUT_DIR, 'demo'));
 
-  for (const fmt of ['svg', 'ttf', 'eot', 'woff', 'woff2']) {
+  fs.writeFileSync(path.join(OUTPUT_DIR, 'fonts', `${fontname}.svg`), svgFont, 'utf8');
+
+  for (const fmt of ['ttf', 'eot', 'woff', 'woff2']) {
     if (result[fmt]) {
       fs.writeFileSync(
         path.join(OUTPUT_DIR, 'fonts', `${fontname}.${fmt}`),
-        result[fmt],
-        fmt === 'svg' ? 'utf8' : undefined
+        result[fmt]
       );
     }
   }
@@ -297,13 +499,14 @@ async function main() {
     // className must NOT have a trailing hyphen; the template adds the separator.
     className:       classprefix.replace(/-$/, ''),   // "st" → .st-tagname
     classBase:       classnamebase,                   // "stg" → .stg { base class }
+    ligatures,
     fontPath:        '../fonts/',
     encode,
     base64opentype:  encodedFont.eot,
     base64woff:      encodedFont.woff,
     base64ttf:       encodedFont.ttf,
     fonts: {
-      svg:   () => Buffer.from(result.svg).toString('base64'),
+      svg:   () => Buffer.from(svgFont).toString('base64'),
       ttf:   () => Buffer.from(result.ttf).toString('base64'),
       eot:   () => Buffer.from(result.eot).toString('base64'),
       woff:  () => Buffer.from(result.woff).toString('base64'),
@@ -312,15 +515,20 @@ async function main() {
     cacheString: Date.now(),
   };
 
-  const cssOut  = renderTemplate('css',     tplContext);
-  const scssOut = renderTemplate('scss',    tplContext);
-  const lessOut = renderTemplate('less',    tplContext);
-  const htmlOut = renderTemplate('cssdemo', tplContext);
+  const cssOut     = renderTemplate('css',     tplContext);
+  const scssOut    = renderTemplate('scss',    tplContext);
+  const lessOut    = renderTemplate('less',    tplContext);
+  const htmlOut    = renderTemplate('html',    tplContext);
+  const cssDemoOut = renderTemplate('cssdemo', tplContext);
 
-  if (cssOut)  fs.writeFileSync(path.join(OUTPUT_DIR, 'css',  'icons.css'),  cssOut,  'utf8');
-  if (scssOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'scss', 'icons.scss'), scssOut, 'utf8');
-  if (lessOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'less', 'icons.less'), lessOut, 'utf8');
-  if (htmlOut) fs.writeFileSync(path.join(OUTPUT_DIR, 'demo.html'),           htmlOut, 'utf8');
+  if (cssOut)     fs.writeFileSync(path.join(OUTPUT_DIR, 'css',  'icons.css'),  cssOut,  'utf8');
+  if (scssOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'scss', 'icons.scss'), scssOut, 'utf8');
+  if (lessOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'less', 'icons.less'), lessOut, 'utf8');
+  if (htmlOut)    fs.writeFileSync(path.join(OUTPUT_DIR, 'demo.html'),          htmlOut, 'utf8');
+  if (cssDemoOut) {
+    fse.ensureDirSync(path.join(OUTPUT_DIR, 'demo', 'css'));
+    fs.writeFileSync(path.join(OUTPUT_DIR, 'demo', 'css', 'style.css'), cssDemoOut, 'utf8');
+  }
 
   // ── unicodesMap.json ─────────────────────────────────────────────────────────
   fs.writeFileSync(
@@ -339,6 +547,7 @@ async function main() {
   console.log(`  less/icons.less`);
   console.log(`  unicodesMap.json`);
   console.log(`  demo.html`);
+  console.log(`  demo/css/style.css`);
   console.log(`\n  Output: ${OUTPUT_DIR}`);
 }
 
