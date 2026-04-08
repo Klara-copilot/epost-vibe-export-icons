@@ -10,10 +10,13 @@
  *   node export-cli.mjs
  */
 
+import { config } from 'dotenv';
+config();
+
 import { input, select, confirm } from '@inquirer/prompts';
 import { writeFileSync, mkdtempSync } from 'fs';
 import { join, resolve, dirname } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
@@ -54,11 +57,37 @@ const SHARED_METADATA = {
   copyright:   'Klara Design',
 };
 
-// Default project path (mirrors nucleo-export.js default)
-const DEFAULT_PROJECT_DIR = resolve(
-  __dirname,
-  '../theme_icons/nc-projects/0fb05cef24426bce2d2320',
+// ─── Environment-driven path helpers ─────────────────────────────────────────
+
+const expandHome = p => (p && p.startsWith('~') ? join(homedir(), p.slice(1)) : p);
+
+const PROJECT_ROOT = expandHome(
+  process.env.PROJECT_ROOT || '~/Work/Projects/theme_icons',
 );
+
+// Nucleo project UUIDs per style
+const STYLE_UUIDS = {
+  'streamline-icons-glyph':   process.env.NUCLEO_UUID_GLYPH,
+  'streamline-icons-regular': process.env.NUCLEO_UUID_REGULAR,
+  'streamline-icons-bold':    process.env.NUCLEO_UUID_BOLD,
+  'streamline-icons-light':   process.env.NUCLEO_UUID_LIGHT,
+};
+
+// Output subdirectories (relative to PROJECT_ROOT) per style
+const STYLE_OUTPUT_SUBDIRS = {
+  'streamline-icons-glyph':   process.env.OUTPUT_SUBDIR_GLYPH,
+  'streamline-icons-regular': process.env.OUTPUT_SUBDIR_REGULAR,
+  'streamline-icons-bold':    process.env.OUTPUT_SUBDIR_BOLD,
+  'streamline-icons-light':   process.env.OUTPUT_SUBDIR_LIGHT,
+};
+
+const defaultProjectDir = style =>
+  join(PROJECT_ROOT, 'nc-projects', STYLE_UUIDS[style] || style);
+
+const defaultOutputDir = style =>
+  STYLE_OUTPUT_SUBDIRS[style]
+    ? join(PROJECT_ROOT, STYLE_OUTPUT_SUBDIRS[style])
+    : resolve(__dirname, `dist/${style}`);
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -116,12 +145,12 @@ async function promptExportConfig() {
 
   const projectDir = await input({
     message: 'Project directory (nc-projects/{uuid}):',
-    default: DEFAULT_PROJECT_DIR,
+    default: defaultProjectDir(style),
   });
 
   const outputDir = await input({
     message: 'Output directory:',
-    default: resolve(__dirname, `dist/${style}`),
+    default: defaultOutputDir(style),
   });
 
   // 4. Assemble config
