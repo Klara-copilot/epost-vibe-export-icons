@@ -37,6 +37,14 @@ const webfont  = require('webfont').default;
 const { optimize: svgoOptimize } = require('svgo');
 const { SVGPathData, SVGPathDataTransformer } = require('svg-pathdata');
 
+// ── Stroke-to-path tracing (resvg + Potrace) ───────────────────────────────
+let _resvg = null;
+function getResvg() {
+  if (!_resvg) _resvg = require('@resvg/resvg-js');
+  return _resvg;
+}
+const potrace = require('./lib/potrace');
+
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const PROJECT_DIR = process.argv[2] || process.env.PROJECT_DIR
@@ -320,6 +328,69 @@ function renderTemplate(templateName, context) {
   return nunjucks.render(`template.${templateName}.njk`, context);
 }
 
+// ─── Stroke-to-path helpers ───────────────────────────────────────────────────
+
+/**
+ * Returns true when the SVG string contains at least one stroke attribute that
+ * is not explicitly "none" or width "0".  Used to decide whether to run the
+ * rasterize-and-trace pipeline on an intermediate font SVG.
+ *
+ * @param {string} svgString
+ * @returns {boolean}
+ */
+function hasSignificantStrokes(svgString) {
+  // Must have stroke= that isn't "none"
+  if (!/\bstroke="(?!none)[^"]+"/i.test(svgString)) return false;
+  // Simple heuristic: presence of a real stroke value is sufficient.
+  return true;
+}
+
+/**
+ * Rasterize the intermediate font SVG at 256×256, trace the bitmap with
+ * Potrace, and return a new SVG containing a single filled path.  This
+ * replicates NucleoApp's Canvg+Potrace pipeline for outline-class icons.
+ *
+ * @param {string} fontSvgString  — the 256×256 intermediate SVG produced by buildFontSvg()
+ * @param {string} iconName
+ * @returns {Promise<string>}     — replacement SVG with a single filled <path>
+ */
+async function traceStrokedSvg(fontSvgString, iconName) {
+  const RENDER_SIZE = 256;
+  const { Resvg } = getResvg();
+
+  // Render the 256×256 font intermediate SVG to RGBA pixels
+  const resvg = new Resvg(fontSvgString, {
+    fitTo: { mode: 'width', value: RENDER_SIZE },
+  });
+  const rendered = resvg.render();
+  const rgba   = rendered.pixels; // Uint8ClampedArray, RGBA
+  const width  = rendered.width;
+  const height = rendered.height;
+
+  // Run Potrace
+  potrace.clear();
+  potrace.loadFromRGBA(rgba, width, height);
+  potrace.setParameter({ turdsize: 1, optcurve: true, alphamax: 1, opttolerance: 0.2 });
+  potrace.process();
+  const tracedSvg = potrace.getSVG(1); // coordinates in pixel space (0..256)
+
+  // Extract path d attribute from Potrace output (<path d="...">)
+  const dMatch = tracedSvg.match(/<path\b[^>]*\bd="([^"]+)"/);
+  if (!dMatch) return fontSvgString; // fallback: return original
+
+  const pathData = dMatch[1];
+
+  // Build new intermediate SVG with a single filled path (no strokes)
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${RENDER_SIZE}" height="${RENDER_SIZE}">`,
+    `<g class="nc-icon-wrapper" fill="#111111" transform="scale(1)">`,
+    `<title>${iconName}</title>`,
+    `<path d="${pathData}" fill="#111111" fill-rule="evenodd"/>`,
+    `</g>`,
+    `</svg>`,
+  ].join('\n');
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -420,7 +491,12 @@ async function main() {
     const rawSvg    = fs.readFileSync(srcPath, 'utf8');
     const sourceSvg = optimizeSourceSvg(rawSvg);   // Phase 1: SVGO (NucleoApp-exact config)
     const grid      = icon.grid || icon.width || 24;
-    const fontSvg   = buildFontSvg(sourceSvg, iconName, primaryColor, grid);
+    let fontSvg = buildFontSvg(sourceSvg, iconName, primaryColor, grid);
+    // If the source SVG uses strokes, rasterize+trace to get clean filled outlines
+    // (matches NucleoApp's Potrace pipeline for outline-klass icons)
+    if (hasSignificantStrokes(sourceSvg)) {
+      fontSvg = await traceStrokedSvg(fontSvg, iconName);
+    }
     const hexPrefix = placeToHexPrefix(icon.place);
     const cssClass  = classprefix + iconName;
     const unicodeVal = placeToUnicode(icon.place);
