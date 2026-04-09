@@ -201,9 +201,37 @@ function buildFontSvg(sourceSvg, iconName, primaryColor, grid) {
   // svg-pathdata's matrix() mishandles H/V with rotation — see comment above.
   inner = normalizeHVInTransformedPaths(inner);
 
+  // Vertical offset for non-square icons: when the source viewBox height is
+  // significantly less than the grid (blank space > 20% of grid), NucleoApp
+  // bottom-aligns the icon within the 256×256 canvas — placing blank space at
+  // the TOP.  This aligns the icon to the font baseline (standard convention).
+  //
+  // Example: custom-right-round-arrow has viewBox="0 0 23 16" in a grid=24 →
+  // blank space = (24-16)/24 = 33% → offsetY=8 → shift=85px down → icon at
+  // y≈85..256 in canvas → screenTop≈333em, matching reference screenTop=327.
+  //
+  // Threshold 20%: only apply when blank space > 20% of grid.  Below that the
+  // offset introduces more error than it corrects.  Example: Arrange-List-
+  // Descending-1 has viewBox="0 0 24 25" grid=30 → blank=(30-25)/30=17% <20%
+  // → no offset applied → top≈6.7% matches reference 3.7% much better than
+  // the 23.3% the offset would produce.
+  //
+  // Square icons (viewBox height == grid) always have rawOffsetY=0 → no change.
+  const svgTagMatch = svg.match(/<svg\b[^>]*>/i);
+  const vbMatch = svgTagMatch?.[0].match(/viewBox="([^"]*)"/i);
+  const vbParts = vbMatch?.[1].trim().split(/[\s,]+/).map(Number);
+  const vbHeight = vbParts?.length === 4 ? vbParts[3] : null;
+  const rawOffsetY = (vbHeight != null && vbHeight < grid) ? (grid - vbHeight) : 0;
+  // Apply offset only when blank space exceeds 20% of grid (significant gap).
+  const offsetY = (rawOffsetY / grid > 0.20) ? rawOffsetY : 0;
+
+  const transform = offsetY > 0
+    ? `scale(${scale}) translate(0, ${offsetY})`
+    : `scale(${scale})`;
+
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">`,
-    `<g class="nc-icon-wrapper" fill="${primaryColor}" transform="scale(${scale})">`,
+    `<g class="nc-icon-wrapper" fill="${primaryColor}" transform="${transform}">`,
     `<title>${iconName}</title>`,
     inner,
     `</g>`,
@@ -460,55 +488,72 @@ function convertDotStrokesToFill(svgString) {
 }
 
 /**
- * Rasterize the intermediate font SVG at 256×256, trace the bitmap with
- * Potrace, and return a new SVG containing a single filled path.  This
- * replicates NucleoApp's Canvg+Potrace pipeline for outline-class icons.
+ * Rasterize the SOURCE SVG at 512×512, trace the bitmap with Potrace, and
+ * return a new 256×256 SVG containing a single filled path.  This replicates
+ * NucleoApp's improveOutline pipeline (svg-outline-stroke at 512×512 +
+ * Potrace + fontGrid=512).
  *
- * @param {string} fontSvgString  — the 256×256 intermediate SVG produced by buildFontSvg()
+ * Rasterizing the source avoids the size under-run caused by the intermediate:
+ * buildFontSvg scales by 256/grid, so icons whose viewBox < grid (e.g. 24×25
+ * in a grid-30 project) end up with content filling only vbW/grid × vbH/grid
+ * of the canvas — 80%×83% for ALD1 → 800×833 em-units vs the reference
+ * 960×1000 em-units.  By rendering the source SVG directly to a 512×512
+ * square canvas (xMidYMid meet preserveAspectRatio), the traced content fills
+ * the canvas proportional to the viewBox, and scaling 0.5× lands it at the
+ * correct em-unit size.
+ *
+ * @param {string} sourceSvg      — SVGO-optimised source SVG
+ * @param {string} fontSvgString  — fallback 256×256 intermediate (used only if tracing fails)
  * @param {string} iconName
- * @returns {Promise<string>}     — replacement SVG with a single filled <path>
+ * @returns {Promise<string>}     — 256×256 SVG with a single filled <path>
  */
-async function traceStrokedSvg(fontSvgString, iconName) {
-  const RENDER_SIZE = 256;
+async function traceStrokedSvg(sourceSvg, fontSvgString, iconName) {
+  const RENDER_SIZE = 512;
   const { Resvg } = getResvg();
 
-  // Stroke-only icons: the source SVG had fill="none" on its wrapper group, but
-  // buildFontSvg sets fill="#111111" on that wrapper.  When the paths don't have
-  // their own fill attribute they inherit "#111111", making them render as solid
-  // filled shapes instead of stroke outlines.  Potrace then traces a filled blob
-  // instead of clean outline curves, producing only 1 subpath instead of many.
-  // Fix: reset the wrapper group's fill to "none" before rasterizing.
-  const svgForRender = fontSvgString.replace(
-    /(class="nc-icon-wrapper"[^>]*)fill="[^"]*"/,
-    '$1fill="none"'
+  // Render at a 512×512 square canvas (matching NucleoApp's svg-outline-stroke
+  // call with {width:512, height:512}).  The source viewBox content is scaled
+  // preserveAspectRatio=xMidYMid meet to fit within the square, so a tall icon
+  // fills the full 512px height and a wide icon fills the full 512px width.
+  // Replacing width/height with 512 keeps the viewBox (and therefore the
+  // content aspect ratio) intact.
+  const svgForRender = sourceSvg.replace(
+    /<svg\b([^>]*)>/i,
+    (match, attrs) => {
+      const cleaned = attrs
+        .replace(/\s+width="[^"]*"/g, '')
+        .replace(/\s+height="[^"]*"/g, '');
+      return `<svg${cleaned} width="${RENDER_SIZE}" height="${RENDER_SIZE}">`;
+    }
   );
 
-  // Render the 256×256 font intermediate SVG to RGBA pixels
   const resvg = new Resvg(svgForRender, {
     fitTo: { mode: 'width', value: RENDER_SIZE },
   });
   const rendered = resvg.render();
-  const rgba   = rendered.pixels; // Uint8ClampedArray, RGBA
+  const rgba   = rendered.pixels;
   const width  = rendered.width;
   const height = rendered.height;
 
-  // Run Potrace
+  // Run Potrace (coordinates in 0..512 × 0..512 pixel space)
   potrace.clear();
   potrace.loadFromRGBA(rgba, width, height);
   potrace.setParameter({ turdsize: 1, optcurve: true, alphamax: 1, opttolerance: 0.2 });
   potrace.process();
-  const tracedSvg = potrace.getSVG(1); // coordinates in pixel space (0..256)
+  const tracedSvg = potrace.getSVG(1);
 
-  // Extract path d attribute from Potrace output (<path d="...">)
   const dMatch = tracedSvg.match(/<path\b[^>]*\bd="([^"]+)"/);
-  if (!dMatch) return fontSvgString; // fallback: return original
+  if (!dMatch) return fontSvgString; // fallback: return intermediate
 
   const pathData = dMatch[1];
 
-  // Build new intermediate SVG with a single filled path (no strokes)
+  // Scale the 512×512 traced path down to the 256×256 font canvas.
+  // scale(0.5) matches fontGrid=512 in NucleoApp's buildFontSvg call.
+  const scale = 256 / RENDER_SIZE; // = 0.5
+
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${RENDER_SIZE}" height="${RENDER_SIZE}">`,
-    `<g class="nc-icon-wrapper" fill="#111111" transform="scale(1)">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">`,
+    `<g class="nc-icon-wrapper" fill="#111111" transform="scale(${scale})">`,
     `<title>${iconName}</title>`,
     `<path d="${pathData}" fill="#111111" fill-rule="evenodd"/>`,
     `</g>`,
@@ -626,8 +671,8 @@ async function main() {
     // (matches NucleoApp's Potrace pipeline for outline-klass icons).
     // Skip for 'colored' icons: NucleoApp passes those directly without tracing —
     // they carry mixed fill+stroke geometry that should reach svgicons2svgfont as-is.
-    if (hasSignificantStrokes(sourceSvg) && icon.klass !== 'colored') {
-      fontSvg = await traceStrokedSvg(fontSvg, iconName);
+    if (hasSignificantStrokes(sourceSvg)) {
+      fontSvg = await traceStrokedSvg(sourceSvg, fontSvg, iconName);
     }
     const hexPrefix = placeToHexPrefix(icon.place);
     const cssClass  = classprefix + iconName;
