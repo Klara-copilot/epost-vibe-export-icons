@@ -345,6 +345,120 @@ function hasSignificantStrokes(svgString) {
   return true;
 }
 
+// Maximum path length (in source units) to qualify as a "dot" stroke.
+const DOT_LEN_MAX = 0.5;
+
+/**
+ * Vector-converts near-zero-length strokes with stroke-linecap="square" into
+ * filled rectangle paths.
+ *
+ * Some icons (e.g. sparkle dot grids) use extremely short paths (≤0.01 units)
+ * as square dots via stroke-linecap="square".  Adjacent dots are spaced by
+ * exactly stroke-width, leaving a zero geometric gap — rasterization always
+ * merges them into blobs regardless of resolution.
+ *
+ * Adaptive stroke-width cap: when adjacent dots touch (minDist ≤ stroke-width),
+ * the effective stroke-width is set to minDist/2, creating a gap equal to half
+ * the grid spacing and matching the NucleoApp reference output.
+ *
+ * After conversion all stroke attributes are stripped so hasSignificantStrokes()
+ * returns false, skipping the rasterize+trace pipeline for these icons.
+ *
+ * @param {string} svgString  — SVGO-optimised source SVG
+ * @returns {string}          — SVG with dot-strokes replaced by filled rect paths,
+ *                             or the original string unchanged if no dots found.
+ */
+function convertDotStrokesToFill(svgString) {
+  const NUM_RE = '[-+]?(?:\\d*\\.)?\\d+(?:[eE][-+]?\\d+)?';
+
+  // Parse a near-zero-length path d= value (M … L/H/V …) into {x1,y1,x2,y2}.
+  function parseDotPath(dVal) {
+    const d = dVal.trim();
+    const lRe = new RegExp(`^M\\s*(${NUM_RE})\\s+(${NUM_RE})\\s*L\\s*(${NUM_RE})\\s+(${NUM_RE})\\s*$`, 'i');
+    const hRe = new RegExp(`^M\\s*(${NUM_RE})\\s+(${NUM_RE})\\s*H\\s*(${NUM_RE})\\s*$`, 'i');
+    const vRe = new RegExp(`^M\\s*(${NUM_RE})\\s+(${NUM_RE})\\s*V\\s*(${NUM_RE})\\s*$`, 'i');
+    let m;
+    if ((m = lRe.exec(d))) return { x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] };
+    if ((m = hRe.exec(d))) return { x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[2] };
+    if ((m = vRe.exec(d))) return { x1: +m[1], y1: +m[2], x2: +m[1], y2: +m[3] };
+    return null;
+  }
+
+  // Normalise: convert <path ...></path> to <path .../> for uniform processing.
+  // SVG <path> elements never have meaningful children, so this is always safe.
+  let s = svgString.replace(/<path\b([^>]*)>\s*<\/path>/g, '<path$1/>');
+
+  // ── Pass 1: collect visible dot centers ──────────────────────────────────────
+  const dots = [];
+  for (const m of s.matchAll(/<path\b((?:[^>]|\/(?!>))*)(\/?>)/g)) {
+    const attrs = m[1];
+    if (!attrs.includes('stroke-linecap="square"')) continue;
+    const sop = parseFloat(attrs.match(/stroke-opacity="([^"]*)"/)?.[1] ?? '1');
+    if (sop < 0.5) continue;
+    const sw  = parseFloat(attrs.match(/stroke-width="([^"]*)"/)?.[1] ?? '1');
+    const dVal = attrs.match(/\bd="([^"]*)"/)?.[1];
+    if (!dVal) continue;
+    const p = parseDotPath(dVal);
+    if (!p || Math.hypot(p.x2 - p.x1, p.y2 - p.y1) > DOT_LEN_MAX) continue;
+    dots.push({ cx: (p.x1 + p.x2) / 2, cy: (p.y1 + p.y2) / 2, sw });
+  }
+
+  if (dots.length === 0) return svgString; // no dots — nothing to convert
+
+  // ── Minimum center-to-center distance between any two dots ───────────────────
+  let minDist = Infinity;
+  for (let i = 0; i < dots.length; i++) {
+    for (let j = i + 1; j < dots.length; j++) {
+      const d = Math.hypot(dots[i].cx - dots[j].cx, dots[i].cy - dots[j].cy);
+      if (d < minDist) minDist = d;
+    }
+  }
+
+  // ── Pass 2: replace matched dot-strokes with filled rect paths ───────────────
+  let anyConverted = false;
+  s = s.replace(/<path\b((?:[^>]|\/(?!>))*)(\/?>)/g, (match, attrs, close) => {
+    if (!attrs.includes('stroke-linecap="square"')) return match;
+    const sop = parseFloat(attrs.match(/stroke-opacity="([^"]*)"/)?.[1] ?? '1');
+    if (sop < 0.5) return match;
+    const sw  = parseFloat(attrs.match(/stroke-width="([^"]*)"/)?.[1] ?? '1');
+    const dVal = attrs.match(/\bd="([^"]*)"/)?.[1];
+    if (!dVal) return match;
+    const p = parseDotPath(dVal);
+    if (!p || Math.hypot(p.x2 - p.x1, p.y2 - p.y1) > DOT_LEN_MAX) return match;
+
+    // Adaptive stroke-width: when dots touch (minDist ≤ sw), cap to minDist/2
+    // so adjacent squares have a visible gap equal to half the grid spacing.
+    const effectiveSw = (isFinite(minDist) && minDist <= sw) ? minDist / 2 : sw;
+    const hw = effectiveSw / 2;
+    const cx = (p.x1 + p.x2) / 2, cy = (p.y1 + p.y2) / 2;
+    const rx = Math.abs(p.x2 - p.x1) / 2 + hw;
+    const ry = Math.abs(p.y2 - p.y1) / 2 + hw;
+    const fp = `M${cx - rx} ${cy - ry}` +
+               ` L${cx + rx} ${cy - ry}` +
+               ` L${cx + rx} ${cy + ry}` +
+               ` L${cx - rx} ${cy + ry} Z`;
+    anyConverted = true;
+    return `<path d="${fp}"/>`;
+  });
+
+  if (!anyConverted) return svgString;
+
+  // Strip all stroke attributes from path elements so hasSignificantStrokes()
+  // returns false for this now-fill-only icon, skipping rasterize+trace.
+  s = s.replace(/<path\b((?:[^>]|\/(?!>))*)(\/?>)/g, (m, attrs, close) => {
+    const stripped = attrs.replace(/\s+stroke(?:-[-a-z]+)?="[^"]*"/gi, '');
+    return `<path${stripped}${close}`;
+  });
+
+  // Also strip inherited stroke attrs from any <g> wrappers (e.g. stroke-linecap).
+  s = s.replace(/<g\b([^>]*)>/g, (m, attrs) => {
+    const stripped = attrs.replace(/\s+stroke(?:-[-a-z]+)?="[^"]*"/gi, '');
+    return `<g${stripped}>`;
+  });
+
+  return s;
+}
+
 /**
  * Rasterize the intermediate font SVG at 256×256, trace the bitmap with
  * Potrace, and return a new SVG containing a single filled path.  This
@@ -500,12 +614,19 @@ async function main() {
     usedNames.add(iconName);
 
     const rawSvg    = fs.readFileSync(srcPath, 'utf8');
-    const sourceSvg = optimizeSourceSvg(rawSvg);   // Phase 1: SVGO (NucleoApp-exact config)
+    let   sourceSvg = optimizeSourceSvg(rawSvg);   // Phase 1: SVGO (NucleoApp-exact config)
+
+    // Vector-convert near-zero-length square-linecap strokes to filled rects.
+    // Must run before hasSignificantStrokes() so converted icons skip tracing.
+    sourceSvg = convertDotStrokesToFill(sourceSvg);
+
     const grid      = icon.grid || icon.width || 24;
     let fontSvg = buildFontSvg(sourceSvg, iconName, primaryColor, grid);
     // If the source SVG uses strokes, rasterize+trace to get clean filled outlines
-    // (matches NucleoApp's Potrace pipeline for outline-klass icons)
-    if (hasSignificantStrokes(sourceSvg)) {
+    // (matches NucleoApp's Potrace pipeline for outline-klass icons).
+    // Skip for 'colored' icons: NucleoApp passes those directly without tracing —
+    // they carry mixed fill+stroke geometry that should reach svgicons2svgfont as-is.
+    if (hasSignificantStrokes(sourceSvg) && icon.klass !== 'colored') {
       fontSvg = await traceStrokedSvg(fontSvg, iconName);
     }
     const hexPrefix = placeToHexPrefix(icon.place);
