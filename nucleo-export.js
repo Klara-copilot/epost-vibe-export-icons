@@ -433,6 +433,27 @@ function convertDotStrokesToFill(svgString) {
 
   if (dots.length === 0) return svgString; // no dots — nothing to convert
 
+  // ── Guard: bail out if any non-dot stroke paths exist ────────────────────────
+  // This function is designed for icons whose ENTIRE geometry is dot-strokes
+  // (e.g. sparkle grids).  If the icon also has real stroke paths (closed
+  // shapes, long lines, etc.) the final stroke-strip below would make those
+  // invisible since they have fill="none".  In that case leave the icon
+  // untouched so it falls through to the normal traceStrokedSvg pipeline.
+  for (const m of s.matchAll(/<path\b((?:[^>]|\/(?!>))*)(\/?>)/g)) {
+    const attrs = m[1];
+    // Check for a visible stroke
+    const strokeVal = attrs.match(/\bstroke="([^"]*)"/)?.[1];
+    if (!strokeVal || strokeVal === 'none') continue;
+    const sop = parseFloat(attrs.match(/stroke-opacity="([^"]*)"/)?.[1] ?? '1');
+    if (sop < 0.5) continue;
+    // Is this a dot? (square-linecap + near-zero length)
+    if (!attrs.includes('stroke-linecap="square"')) return svgString; // non-dot stroke
+    const dVal = attrs.match(/\bd="([^"]*)"/)?.[1];
+    if (!dVal) return svgString;
+    const p = parseDotPath(dVal);
+    if (!p || Math.hypot(p.x2 - p.x1, p.y2 - p.y1) > DOT_LEN_MAX) return svgString; // non-dot stroke
+  }
+
   // ── Minimum center-to-center distance between any two dots ───────────────────
   let minDist = Infinity;
   for (let i = 0; i < dots.length; i++) {
