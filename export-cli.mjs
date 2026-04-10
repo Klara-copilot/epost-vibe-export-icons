@@ -49,6 +49,28 @@ const STYLE_PRESETS = {
     classprefix:   'st-',
     version:       '0.55',
   },
+  'streamline-illustrations': {
+    fontname:      'streamline-illustrations',
+    classnamebase: 'sti',
+    classprefix:   'st-',
+    version:       '0.1',
+    pipeline:      'sprite',
+    baseClass:     'streamline-icons',
+    idPrefix:      'streamline-icon-',
+    assetsPath:    'img',
+    fileName:      'streamline-icons.svg',
+  },
+  'streamline-illustrations-duotone': {
+    fontname:      'streamline-illustrations-duotone',
+    classnamebase: 'stid',
+    classprefix:   'st-',
+    version:       '0.1',
+    pipeline:      'sprite',
+    baseClass:     'streamline-icons',
+    idPrefix:      'streamline-icon-',
+    assetsPath:    'img',
+    fileName:      'streamline-icons.svg',
+  },
 };
 
 const SHARED_METADATA = {
@@ -67,18 +89,22 @@ const PROJECT_ROOT = expandHome(
 
 // Nucleo project UUIDs per style
 const STYLE_UUIDS = {
-  'streamline-icons-glyph':   process.env.NUCLEO_UUID_GLYPH,
-  'streamline-icons-regular': process.env.NUCLEO_UUID_REGULAR,
-  'streamline-icons-bold':    process.env.NUCLEO_UUID_BOLD,
-  'streamline-icons-light':   process.env.NUCLEO_UUID_LIGHT,
+  'streamline-icons-glyph':              process.env.NUCLEO_UUID_GLYPH,
+  'streamline-icons-regular':            process.env.NUCLEO_UUID_REGULAR,
+  'streamline-icons-bold':               process.env.NUCLEO_UUID_BOLD,
+  'streamline-icons-light':              process.env.NUCLEO_UUID_LIGHT,
+  'streamline-illustrations':            process.env.NUCLEO_UUID_ILLUSTRATIONS,
+  'streamline-illustrations-duotone':    process.env.NUCLEO_UUID_ILLUSTRATIONS_DUOTONE,
 };
 
 // Output subdirectories (relative to PROJECT_ROOT) per style
 const STYLE_OUTPUT_SUBDIRS = {
-  'streamline-icons-glyph':   process.env.OUTPUT_SUBDIR_GLYPH,
-  'streamline-icons-regular': process.env.OUTPUT_SUBDIR_REGULAR,
-  'streamline-icons-bold':    process.env.OUTPUT_SUBDIR_BOLD,
-  'streamline-icons-light':   process.env.OUTPUT_SUBDIR_LIGHT,
+  'streamline-icons-glyph':              process.env.OUTPUT_SUBDIR_GLYPH,
+  'streamline-icons-regular':            process.env.OUTPUT_SUBDIR_REGULAR,
+  'streamline-icons-bold':               process.env.OUTPUT_SUBDIR_BOLD,
+  'streamline-icons-light':              process.env.OUTPUT_SUBDIR_LIGHT,
+  'streamline-illustrations':            process.env.OUTPUT_SUBDIR_ILLUSTRATIONS,
+  'streamline-illustrations-duotone':    process.env.OUTPUT_SUBDIR_ILLUSTRATIONS_DUOTONE,
 };
 
 const defaultProjectDir = style =>
@@ -92,7 +118,7 @@ const defaultOutputDir = style =>
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
 async function promptExportConfig() {
-  console.log('\n=== Nucleo Icon Font — Export Configuration ===\n');
+  console.log('\n=== Nucleo Export — Configuration ===\n');
 
   // 1. Style selection
   const style = await select({
@@ -100,26 +126,14 @@ async function promptExportConfig() {
     choices: Object.keys(STYLE_PRESETS).map(s => ({ name: s, value: s })),
   });
 
-  const preset = STYLE_PRESETS[style];
+  const preset   = STYLE_PRESETS[style];
+  const isSprite = preset.pipeline === 'sprite';
 
-  console.log(`\nConfigure export for: ${style}\n(Press Enter to accept each default)\n`);
+  console.log(`\nConfigure export for: ${style}`);
+  console.log(`Pipeline: ${isSprite ? 'SVG sprite (<symbol>)' : 'Icon font'}`);
+  console.log('(Press Enter to accept each default)\n');
 
-  // 2. Per-field prompts with style-specific defaults
-  const fontname = await input({
-    message: 'Font Name:',
-    default: preset.fontname,
-  });
-
-  const classnamebase = await input({
-    message: 'Base Class:',
-    default: preset.classnamebase,
-  });
-
-  const classprefix = await input({
-    message: 'Class Prefix:',
-    default: preset.classprefix,
-  });
-
+  // 2. Common metadata prompts
   const author = await input({
     message: 'Author:',
     default: SHARED_METADATA.author,
@@ -140,6 +154,86 @@ async function promptExportConfig() {
     default: SHARED_METADATA.copyright,
   });
 
+  let exportConfig;
+
+  if (isSprite) {
+    // ── SVG sprite pipeline ──────────────────────────────────────────────────
+    const baseClass  = await input({
+      message: 'Base CSS class:',
+      default: preset.baseClass || 'streamline-icons',
+    });
+
+    const idPrefix = await input({
+      message: 'Icon ID prefix:',
+      default: preset.idPrefix || 'streamline-icon-',
+    });
+
+    const assetsPath = await input({
+      message: 'Assets path (subdirectory for sprite file):',
+      default: preset.assetsPath || 'img',
+    });
+
+    const fileName = await input({
+      message: 'File name:',
+      default: preset.fileName || 'streamline-icons.svg',
+    });
+
+    exportConfig = {
+      svgsprite: {
+        baseClass,
+        idPrefix,
+        assetsPath,
+        fileName,
+        metadataEnable: true,
+        metadata: {
+          author,
+          description,
+          version,
+          copyright,
+          license: '',
+          url:     '',
+        },
+      },
+    };
+  } else {
+    // ── Icon font pipeline ───────────────────────────────────────────────────
+    const fontname = await input({
+      message: 'Font Name:',
+      default: preset.fontname,
+    });
+
+    const classnamebase = await input({
+      message: 'Base Class:',
+      default: preset.classnamebase,
+    });
+
+    const classprefix = await input({
+      message: 'Class Prefix:',
+      default: preset.classprefix,
+    });
+
+    exportConfig = {
+      iconfont: {
+        fontname,
+        classprefix,
+        classnamebase,
+        encode:         false,
+        ligatures:      false,
+        improveOutline: false,
+        metrics:        { enable: false, ascent: '256', descent: '0' },
+        metadataEnable: true,
+        metadata: {
+          author,
+          description,
+          version,
+          copyright,
+          license: '',
+          url:     '',
+        },
+      },
+    };
+  }
+
   // 3. Paths
   console.log('\n--- Export Paths ---\n');
 
@@ -152,28 +246,6 @@ async function promptExportConfig() {
     message: 'Output directory:',
     default: defaultOutputDir(style),
   });
-
-  // 4. Assemble config
-  const exportConfig = {
-    iconfont: {
-      fontname,
-      classprefix,
-      classnamebase,
-      encode:         false,
-      ligatures:      false,
-      improveOutline: false,
-      metrics:        { enable: false, ascent: '256', descent: '0' },
-      metadataEnable: true,
-      metadata: {
-        author,
-        description,
-        version,
-        copyright,
-        license: '',
-        url:     '',
-      },
-    },
-  };
 
   return { exportConfig, projectDir, outputDir };
 }
@@ -204,9 +276,11 @@ async function main() {
   const cfgPath   = join(tmpDir, 'export-config.json');
   writeFileSync(cfgPath, JSON.stringify(exportConfig, null, 2), 'utf8');
 
-  const exportScript = resolve(__dirname, 'nucleo-export.js');
+  const isSprite    = !!exportConfig.svgsprite;
+  const scriptName  = isSprite ? 'nucleo-sprite.js' : 'nucleo-export.js';
+  const exportScript = resolve(__dirname, scriptName);
 
-  console.log(`\nLaunching: node nucleo-export.js ${projectDir} ${outputDir}\n`);
+  console.log(`\nLaunching: node ${scriptName} ${projectDir} ${outputDir}\n`);
 
   const child = spawn(
     process.execPath,

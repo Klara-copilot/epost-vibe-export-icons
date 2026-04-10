@@ -643,11 +643,23 @@ async function main() {
   console.log(`Output  : ${OUTPUT_DIR}\n`);
 
   // ── Prepare intermediate SVGs + build unicodesMap ───────────────────────────
+  // Deduplicate by place: when multiple icons share the same `place` value,
+  // only the last one is visible in the gallery (overwrite semantics).
+  // This is a no-op for icon sets where place values are unique, but correctly
+  // reduces illustration sets (e.g. 196 → 141 visible icons).
+  const byPlace = new Map();
+  for (const icon of icons) byPlace.set(icon.place, icon);
+  const dedupedIcons = [...byPlace.values()];
+
+  if (dedupedIcons.length !== icons.length) {
+    console.log(`Deduped  : ${icons.length} → ${dedupedIcons.length} icons (${icons.length - dedupedIcons.length} duplicate places removed)`);
+  }
+
   // Pre-scan: collect names that are already hyphenated (no normalization needed).
   // When a space-normalized name collides with a pre-existing hyphenated name,
   // NucleoApp appends the suffix to the space-normalized icon, not the other way.
   const hyphenatedNames = new Set(
-    icons
+    dedupedIcons
       .filter(ic => !ic.name.includes(' '))
       .map(ic => normalizeName(ic.name))
   );
@@ -656,7 +668,7 @@ async function main() {
   const usedNames   = new Set();
   let skipped = 0;
 
-  for (const icon of icons) {
+  for (const icon of dedupedIcons) {
     const srcPath = path.join(PROJECT_DIR, icon.uuid + '.svg');
     if (!fs.existsSync(srcPath)) {
       console.warn(`  SKIP ${icon.name} (${icon.uuid}.svg not found)`);
