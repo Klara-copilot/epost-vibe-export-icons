@@ -66,7 +66,22 @@ const NUCLEO_SVGO_PLUGINS = [
 
 function optimizeSourceSvg(svgString) {
   const result = svgoOptimize(svgString, { plugins: NUCLEO_SVGO_PLUGINS });
-  return result.data;
+  const optimized = result.data;
+  // NucleoApp replaces hardcoded colors with currentColor only for
+  // monochromatic icons (single flat color, no gradients).
+  // Multi-color illustrated icons (those using gradient url() references or
+  // multiple distinct colors) must keep their original colors intact.
+  const hasGradient = /url\(#/.test(optimized);
+  if (hasGradient) return optimized;
+  const hardcodedColors = [...optimized.matchAll(/(stroke|fill)="(?!none|currentColor|inherit|url\()([^"]+)"/g)]
+    .map(m => m[2]);
+  const distinctColors = new Set(hardcodedColors);
+  if (distinctColors.size !== 1) return optimized;
+  // Exactly one hardcoded color → replace with currentColor
+  return optimized.replace(
+    /(stroke|fill)="(?!none|currentColor|inherit|url\()([^"]+)"/g,
+    '$1="currentColor"'
+  );
 }
 
 // ─── Name Normalization ───────────────────────────────────────────────────────
@@ -538,7 +553,7 @@ async function main() {
   }
 
   const spriteCfg = exportCfg?.svgsprite ?? {
-    baseClass:      'streamline-icons',
+    baseClass:      'streamline-icon',
     idPrefix:       'streamline-icon-',
     assetsPath:     'img',
     fileName:       'streamline-icons.svg',
@@ -551,7 +566,7 @@ async function main() {
     },
   };
 
-  const baseClass  = spriteCfg.baseClass  || 'streamline-icons';
+  const baseClass  = spriteCfg.baseClass  || 'streamline-icon';
   const idPrefix   = spriteCfg.idPrefix   || 'streamline-icon-';
   const assetsPath = spriteCfg.assetsPath || 'img';
   const fileName   = spriteCfg.fileName   || 'streamline-icons.svg';
@@ -560,12 +575,21 @@ async function main() {
   console.log(`Output   : ${OUTPUT_DIR}\n`);
 
   // ── Deduplicate by place ──────────────────────────────────────────────────────
-  // When multiple icons share the same `place` value, the last one wins
-  // (matching NucleoApp's gallery overwrite semantics).
+  // When multiple icons share the same `place` value, prefer the entry whose
+  // SVG file actually exists on disk. If multiple or none have the file, the
+  // last entry in JSON order wins (matching NucleoApp's gallery overwrite).
   const byPlace = new Map();
-  for (const icon of icons) byPlace.set(icon.place, icon);
+  for (const icon of icons) {
+    const prev = byPlace.get(icon.place);
+    if (!prev) { byPlace.set(icon.place, icon); continue; }
+    const prevExists = fs.existsSync(path.join(PROJECT_DIR, prev.uuid + '.svg'));
+    const currExists = fs.existsSync(path.join(PROJECT_DIR, icon.uuid + '.svg'));
+    // Only replace previous if current has SVG and previous doesn't
+    if (currExists && !prevExists) byPlace.set(icon.place, icon);
+    else if (!currExists && !prevExists) byPlace.set(icon.place, icon); // last-write-wins fallback
+  }
   // Sort by place ascending — NucleoApp emits symbols in gallery slot order.
-  const dedupedIcons = [...byPlace.values()].sort((a, b) => a.place - b.place);
+  const dedupedIcons = [...byPlace.values()].sort((a, b) => b.place - a.place);
 
   if (dedupedIcons.length !== icons.length) {
     console.log(`Deduped  : ${icons.length} → ${dedupedIcons.length} icons (${icons.length - dedupedIcons.length} duplicate places removed)`);
