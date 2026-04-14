@@ -3,6 +3,9 @@
 const path   = require('path');
 const fs     = require('fs');
 const crypto = require('crypto');
+const { spawn }        = require('child_process');
+const { writeFileSync, mkdtempSync } = require('fs');
+const { tmpdir }       = require('os');
 
 // ─── ANSI color helpers ───────────────────────────────────────────────────────
 const c = {
@@ -142,6 +145,31 @@ function stripLeadingSlash(s) {
   return s ? s.replace(/^\//, '') : s;
 }
 
+// ─── Export runner ────────────────────────────────────────────────────────────
+/**
+ * Spawn nucleo-export.js or nucleo-sprite.js with the given config.
+ * Writes the config to a temp file and passes its path via EXPORT_CONFIG env var.
+ * Returns a Promise that resolves when the child exits 0, rejects otherwise.
+ */
+function spawnExport(scriptPath, projectDir, outputDir, exportConfig) {
+  return new Promise((resolve, reject) => {
+    const tmpDir  = mkdtempSync(path.join(tmpdir(), 'nucleo-cli-'));
+    const cfgPath = path.join(tmpDir, 'export-config.json');
+    writeFileSync(cfgPath, JSON.stringify(exportConfig, null, 2), 'utf8');
+
+    const child = spawn(
+      process.execPath,
+      [scriptPath, projectDir, outputDir],
+      { env: { ...process.env, EXPORT_CONFIG: cfgPath }, stdio: 'inherit' },
+    );
+    child.on('close', code => {
+      if (code !== 0) reject(new Error(`Export script exited with code ${code}`));
+      else resolve();
+    });
+    child.on('error', reject);
+  });
+}
+
 module.exports = {
   c,
   generateUuid,
@@ -153,4 +181,5 @@ module.exports = {
   writeProjectNucleo,
   parseArgs,
   stripLeadingSlash,
+  spawnExport,
 };

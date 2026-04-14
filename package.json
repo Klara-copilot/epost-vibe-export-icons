@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node scripts/index.js",
     "export": "node nucleo-export.js",
     "watch": "node nucleo-watch.js",
     "cli": "node export-cli.mjs",
