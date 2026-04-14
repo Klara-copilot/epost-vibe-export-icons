@@ -5,9 +5,9 @@
  * Phase 1 & 3 of the Streamline illustration pipeline (Part 3 project).
  *
  * Phase 1 — Search & Register:
- *   Finds illustrations in the Streamline Filled and UX Line source assets,
- *   registers them in the Part 3 Nucleo project (project.nucleo), copying
- *   SVG files with UUID filenames.
+ *   Interactively searches Streamline Filled and UX Line source assets as you type.
+ *   Results from both sources are merged; each result shows its source label.
+ *   Pick an illustration, register it, then loop to add more.
  *
  * Phase 2 — Export (run separately):
  *   Run `node nucleo-sprite.js` (or `node export-cli.mjs`) to generate the
@@ -19,8 +19,9 @@
  *   Requires --theme-path to be set.
  *
  * Usage:
- *   node export-illustration.js --name "User Smiling"
- *   node export-illustration.js --name "User Smiling" --theme-path /path/to/klara-theme
+ *   node export-illustration.js
+ *   node export-illustration.js --theme-path /path/to/klara-theme
+ *   node export-illustration.js --name "User Smiling"   # pre-fills first search
  */
 'use strict';
 
@@ -29,7 +30,7 @@ const fs   = require('fs');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { checkbox, confirm } = require('@inquirer/prompts');
+const { search, confirm } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
@@ -63,120 +64,149 @@ const NUCLEO_PATH     = path.join(NC_PROJECT_DIR, 'project.nucleo');
 const OUTPUT_SUBDIR   = stripLeadingSlash(process.env.OUTPUT_SUBDIR_ILLUSTRATIONS || '_Assets/StreamlineIllustrator');
 const EXPORT_DIR      = path.join(PROJECT_ROOT, OUTPUT_SUBDIR, 'img');
 
+// ─── Source labels for display ─────────────────────────────────────────────────────
+
+const SOURCE_LABELS = [
+  'Steamline Filled',
+  'UX Line',
+];
+
+// ─── Search helper ───────────────────────────────────────────────────────────
+
+/**
+ * Search both source dirs. Returns array of { file, sourceLabel } sorted by basename.
+ * Duplicates (same name in both sources) are kept as separate entries so the user
+ * can pick the preferred variant.
+ */
+function searchIllustrations(term) {
+  if (!term || !term.trim()) return [];
+  const results = [];
+  for (let i = 0; i < SOURCE_DIRS.length; i++) {
+    if (!fs.existsSync(SOURCE_DIRS[i])) continue;
+    for (const f of findSvgs(SOURCE_DIRS[i], term.trim())) {
+      results.push({ file: f, sourceLabel: SOURCE_LABELS[i] });
+    }
+  }
+  return results.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
+}
+
+// ─── Register one illustration ────────────────────────────────────────────────
+
+function registerIllustration(selectedFile, existingNames) {
+  const svgBaseName = selectedFile.basename;
+
+  if (existingNames.has(svgBaseName)) {
+    console.log(c.yellow(`  [SKIP] '${svgBaseName}' already exists (uuid: ${existingNames.get(svgBaseName)})`))
+    return null;
+  }
+
+  const { rawJson, obj } = readProjectNucleo(NUCLEO_PATH);
+  const initialCount     = (obj.icons || []).length;
+  const currentMax       = (obj.icons || []).reduce((m, i) => Math.max(m, i.place), 0);
+  const nextPlace        = currentMax + 1;
+
+  const newUuid  = generateUuid();
+  const destPath = path.join(NC_PROJECT_DIR, newUuid + '.svg');
+  fs.copyFileSync(selectedFile.fullPath, destPath);
+  console.log(c.green(`  [COPY] ${svgBaseName}.svg -> ${newUuid}.svg`));
+
+  const iconJson = buildIconJson({
+    uuid:    newUuid,
+    name:    svgBaseName,
+    width:   100,
+    height:  100,
+    klass:   'outline',
+    grid:    128,
+    place:   nextPlace,
+    fillAll: 1,
+  });
+
+  const updatedRaw = spliceIconsIntoRawJson(rawJson, [iconJson], initialCount);
+  const validated  = validateJson(updatedRaw, 'project.nucleo');
+  console.log(c.green(`  [VALID] ${validated.icons.length} icons total (was ${initialCount})`));
+
+  fs.copyFileSync(NUCLEO_PATH, NUCLEO_PATH + '.bak');
+  fs.writeFileSync(NUCLEO_PATH, updatedRaw, 'utf8');
+  existingNames.set(svgBaseName, newUuid);
+  console.log(c.green(`  [ADD]  '${svgBaseName}' (uuid: ${newUuid}, place: ${nextPlace})`));
+  return svgBaseName;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { name, themePath } = parseArgs();
-
-  if (!name) {
-    console.error(c.red(
-      'Usage: node export-illustration.js --name "User Smiling" [--theme-path /path/to/klara-theme]',
-    ));
-    process.exit(1);
-  }
+  const { name: prefillName, themePath } = parseArgs();
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Phase 1: Search & Register in Nucleo Project (Part 3)
+  // Phase 1: Search & Register (loop)
   // ══════════════════════════════════════════════════════════════════════════
-  console.log(c.cyan('\n=== Phase 1: Search & Register Illustration ==='));
-  console.log(c.yellow(`Searching for '${name}' in illustration sources...`));
+  console.log(c.cyan('\n=== Phase 1: Search & Register Illustrations ==='));
 
-  const foundSvgs = [];
-  for (const srcDir of SOURCE_DIRS) {
-    if (fs.existsSync(srcDir)) {
-      foundSvgs.push(...findSvgs(srcDir, name));
-    }
-  }
+  // Load existing names once; kept in-sync after each registration
+  const { existingNames } = readProjectNucleo(NUCLEO_PATH);
+  const addedIcons = [];
+  let isFirstSearch = true;
 
-  if (foundSvgs.length === 0) {
-    console.log(c.red(`No illustrations found matching '${name}'.`));
-    console.log(c.yellow('Searched in:'));
-    SOURCE_DIRS.forEach(d => console.log(`  - ${d}`));
-    process.exit(1);
-  }
+  while (true) {
+    console.log('');
 
-  console.log(c.green(`\nFound ${foundSvgs.length} match(es):`));
-  foundSvgs.forEach((f, i) => {
-    const rel = f.fullPath.replace(UX_ILLUST_ROOT + path.sep, '');
-    console.log(`  [${i + 1}] ${rel}`);
-  });
-
-  // Select one or more illustrations
-  let selectedFiles;
-  if (foundSvgs.length === 1) {
-    selectedFiles = [foundSvgs[0]];
-    console.log(c.yellow('\nAuto-selecting the only match.'));
-  } else {
-    selectedFiles = await checkbox({
-      message: 'Select illustrations to add (space to toggle, enter to confirm):',
-      choices: foundSvgs.map((f, i) => ({
-        name: `[${i + 1}] ${f.fullPath.replace(UX_ILLUST_ROOT + path.sep, '')}`,
-        value: f,
-      })),
+    const searchResult = await search({
+      message: isFirstSearch && prefillName
+        ? `Search illustration name: (pre-filled: ${prefillName})`
+        : 'Search illustration name:',
+      source: async (input) => {
+        const term = (isFirstSearch && prefillName && !input) ? prefillName : (input || '');
+        if (!term.trim()) {
+          return [{ name: c.gray('  Type to search…'), value: null, disabled: true }];
+        }
+        const results = searchIllustrations(term);
+        if (results.length === 0) {
+          return [{ name: c.yellow(`  No illustrations matching "${term}"`), value: null, disabled: true }];
+        }
+        return results.map(({ file, sourceLabel }) => {
+          const alreadyAdded = addedIcons.includes(file.basename);
+          const label        = `${file.basename}  ${c.gray(`[${sourceLabel}]`)}`;
+          return {
+            name: alreadyAdded ? c.gray(`${file.basename}  [already added this session]`) : label,
+            value: file,
+            disabled: alreadyAdded,
+          };
+        });
+      },
     });
-    if (selectedFiles.length === 0) {
-      console.log(c.yellow('No selection made. Aborting.'));
-      process.exit(0);
-    }
-  }
 
-  // Load project.nucleo (raw string approach)
-  const { rawJson: origRaw, obj, existingNames, maxPlace: initMax } = readProjectNucleo(NUCLEO_PATH);
-  const initialCount = (obj.icons || []).length;
-  let maxPlace = initMax;
+    isFirstSearch = false;
 
-  const newFragments = [];
-
-  for (const selectedFile of selectedFiles) {
-    const svgBaseName = selectedFile.basename;
-
-    if (existingNames.has(svgBaseName)) {
-      console.log(c.yellow(`  [SKIP] '${svgBaseName}' already exists (uuid: ${existingNames.get(svgBaseName)})`));
+    if (!searchResult || !searchResult.basename) {
+      console.log(c.yellow('No illustration selected. Try a different search term.'));
+      const retry = await confirm({ message: 'Search again?', default: true });
+      if (!retry) break;
       continue;
     }
 
-    const newUuid  = generateUuid();
-    const destPath = path.join(NC_PROJECT_DIR, newUuid + '.svg');
-    fs.copyFileSync(selectedFile.fullPath, destPath);
-    console.log(c.green(`  [COPY] ${svgBaseName}.svg -> ${newUuid}.svg`));
+    const added = registerIllustration(searchResult, existingNames);
+    if (added) {
+      addedIcons.push(added);
+      console.log(c.green(`\n✓ '${added}' registered.`));
+    } else {
+      console.log(c.yellow(`\n'${searchResult.basename}' already exists — nothing added.`));
+    }
 
-    maxPlace++;
-    const iconJson = buildIconJson({
-      uuid:    newUuid,
-      name:    svgBaseName,
-      width:   100,
-      height:  100,
-      klass:   'outline',
-      grid:    128,
-      place:   maxPlace,
-      fillAll: 1,
-    });
-    newFragments.push(iconJson);
-    existingNames.set(svgBaseName, newUuid);
-    console.log(c.green(`  [ADD]  '${svgBaseName}' (uuid: ${newUuid}, place: ${maxPlace})`));
+    const addMore = await confirm({ message: '\nAdd another illustration?', default: true });
+    if (!addMore) break;
   }
 
-  if (newFragments.length === 0) {
-    console.error(c.red('\nERROR: All selected illustrations already exist in Part 3.'));
-    console.error(c.red('No changes made. Aborting.'));
+  if (addedIcons.length === 0) {
+    console.log(c.yellow('\nNo illustrations were added. Exiting.'));
     process.exit(0);
   }
 
-  const updatedRaw = spliceIconsIntoRawJson(origRaw, newFragments, initialCount);
-  const validated  = validateJson(updatedRaw, 'project.nucleo');
-  console.log(c.green(
-    `\n[VALID] ${validated.icons.length} icons total (was ${validated.icons.length - newFragments.length})`,
-  ));
-
-  fs.copyFileSync(NUCLEO_PATH, NUCLEO_PATH + '.bak');
-  console.log(c.gray('[BACKUP] project.nucleo.bak created'));
-  fs.writeFileSync(NUCLEO_PATH, updatedRaw, 'utf8');
-  console.log(c.green(`[SAVE] project.nucleo updated - ${newFragments.length} illustration(s) added.\n`));
+  console.log(c.cyan(`\n${addedIcons.length} illustration(s) registered: ${addedIcons.join(', ')}`));
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 2: Export sprite (using nucleo-sprite.js / export-cli.mjs)
   // ══════════════════════════════════════════════════════════════════════════
-  console.log('=== Phase 2: Export Sprite ===');
+  console.log(c.cyan('\n=== Phase 2: Export Sprite ==='));
   console.log('Run the sprite export. Use one of:\n');
   console.log('  node export-cli.mjs          (interactive CLI, select streamline-illustrations)');
   console.log(`  node nucleo-sprite.js "${NC_PROJECT_DIR}" "${path.join(PROJECT_ROOT, OUTPUT_SUBDIR)}"\n`);
