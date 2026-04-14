@@ -32,7 +32,7 @@ const fs   = require('fs');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { search, select, confirm } = require('@inquirer/prompts');
+const { search, select, confirm, input } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
@@ -215,7 +215,9 @@ async function registerIcon(iconName, iconFiles) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { name: prefillName, themePath } = parseArgs();
+  const args = parseArgs();
+  const prefillName = args.name;
+  let themePath = args.themePath;
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 1: Search & Register (loop)
@@ -344,16 +346,20 @@ async function main() {
   console.log(c.cyan('\n=== Phase 3: Copy to klara-theme ==='));
 
   if (!themePath) {
-    console.log(c.yellow('No --theme-path provided. Manual copy required:'));
-    for (const style of STYLE_ORDER) {
-      const fontsDir = path.join(EXPORT_DIRS[style], 'fonts');
-      console.log(`  ${style} fonts: ${fontsDir}`);
-      console.log('    -> <klara-theme>/public/assets/fonts/');
-    }
-    const regularScss = path.join(EXPORT_DIRS['Regular'], 'scss', 'icons.scss');
-    console.log('');
-    console.log(`  SCSS map: ${regularScss}`);
-    console.log('    -> <klara-theme>/src/lib/styles/core/icons/_icons-map.scss');
+    console.log(c.yellow('No --theme-path provided.'));
+    themePath = await input({
+      message: 'Enter klara-theme path (absolute):',
+      validate: v => v.trim() ? true : 'Path cannot be empty',
+    });
+    themePath = themePath.trim();
+  }
+
+  const proceedCopy = await confirm({
+    message: `Copy font files + SCSS map to:\n  ${themePath}`,
+    default: true,
+  });
+  if (!proceedCopy) {
+    console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
     console.log(c.cyan('\n=== Done! ==='));
     process.exit(0);
   }

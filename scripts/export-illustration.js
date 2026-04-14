@@ -30,7 +30,7 @@ const fs   = require('fs');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { search, confirm } = require('@inquirer/prompts');
+const { search, confirm, input } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
@@ -152,7 +152,9 @@ function registerIllustration(selectedFile, existingNames) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { name: prefillName, themePath } = parseArgs();
+  const args = parseArgs();
+  const prefillName = args.name;
+  let themePath = args.themePath;
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 1: Search & Register (loop)
@@ -257,10 +259,20 @@ async function main() {
   console.log(c.cyan('\n=== Phase 3: Copy to klara-theme ==='));
 
   if (!themePath) {
-    console.log(c.yellow('No --theme-path provided. Manual copy required:'));
-    console.log(`  Source: ${EXPORT_DIR}`);
-    exportedFiles.forEach(f => console.log(`    ${f}`));
-    console.log('  Target: <klara-theme>/src/lib/assets/icons/');
+    console.log(c.yellow('No --theme-path provided.'));
+    themePath = await input({
+      message: 'Enter klara-theme path (absolute):',
+      validate: v => v.trim() ? true : 'Path cannot be empty',
+    });
+    themePath = themePath.trim();
+  }
+
+  const proceedCopy = await confirm({
+    message: `Copy illustration sprite(s) to:\n  ${path.join(themePath, 'src', 'lib', 'assets', 'icons')}`,
+    default: true,
+  });
+  if (!proceedCopy) {
+    console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
     console.log(c.cyan('\n=== Done! ==='));
     process.exit(0);
   }
@@ -275,10 +287,6 @@ async function main() {
   for (const fname of exportedFiles) {
     const src  = path.join(EXPORT_DIR, fname);
     const dest = path.join(iconsTargetDir, fname);
-    if (fs.existsSync(dest)) {
-      fs.copyFileSync(dest, dest + '.bak');
-      console.log(c.gray(`  [BACKUP] ${fname}.bak`));
-    }
     fs.copyFileSync(src, dest);
     console.log(c.green(`  [COPY] ${fname}`));
   }
