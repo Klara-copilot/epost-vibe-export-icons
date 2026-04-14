@@ -36,7 +36,7 @@ const { search, select, confirm } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
-  validateJson, writeProjectNucleo, parseArgs, stripLeadingSlash,
+  validateJson, writeProjectNucleo, parseArgs, stripLeadingSlash, spawnExport,
 } = require('./lib/common');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -77,14 +77,47 @@ const EXPORT_DIRS = {
   Glyph:   path.join(PROJECT_ROOT, stripLeadingSlash(process.env.OUTPUT_SUBDIR_GLYPH   || '_Assets/StreamlineIcons/sets/Icons Font Glyph')),
 };
 
-const EXPORT_SETTINGS = {
-  Light:   { fontName: 'streamline-icons-light',   baseClass: 'stl' },
-  Regular: { fontName: 'streamline-icons-regular', baseClass: 'str' },
-  Bold:    { fontName: 'streamline-icons-bold',    baseClass: 'stb' },
-  Glyph:   { fontName: 'streamline-icons-glyph',  baseClass: 'stg' },
-};
-
 const STYLE_ORDER = ['Light', 'Regular', 'Bold', 'Glyph'];
+
+// Path to the font-generation script (project root)
+const NUCLEO_EXPORT_SCRIPT = path.join(__dirname, '..', 'nucleo-export.js');
+
+// Per-style export config (improveOutline: true for stroke-based sets)
+const SHARED_META = { author: 'Klara Design', description: 'Built on Streamline 3.0', copyright: 'Klara Design', license: '', url: '' };
+const FONT_EXPORT_CONFIGS = {
+  Light: {
+    iconfont: {
+      fontname: 'streamline-icons-light', classprefix: 'st-', classnamebase: 'stl',
+      encode: false, ligatures: false, improveOutline: true,
+      metrics: { enable: false, ascent: '256', descent: '0' },
+      metadataEnable: true, metadata: { ...SHARED_META, version: '0.55' },
+    },
+  },
+  Regular: {
+    iconfont: {
+      fontname: 'streamline-icons-regular', classprefix: 'st-', classnamebase: 'str',
+      encode: false, ligatures: false, improveOutline: true,
+      metrics: { enable: false, ascent: '256', descent: '0' },
+      metadataEnable: true, metadata: { ...SHARED_META, version: '0.1' },
+    },
+  },
+  Bold: {
+    iconfont: {
+      fontname: 'streamline-icons-bold', classprefix: 'st-', classnamebase: 'stb',
+      encode: false, ligatures: false, improveOutline: false,
+      metrics: { enable: false, ascent: '256', descent: '0' },
+      metadataEnable: true, metadata: { ...SHARED_META, version: '0.1' },
+    },
+  },
+  Glyph: {
+    iconfont: {
+      fontname: 'streamline-icons-glyph', classprefix: 'st-', classnamebase: 'stg',
+      encode: false, ligatures: false, improveOutline: false,
+      metrics: { enable: false, ascent: '256', descent: '0' },
+      metadataEnable: true, metadata: { ...SHARED_META, version: '0.1' },
+    },
+  },
+};
 
 // ─── Search helpers ───────────────────────────────────────────────────────────
 
@@ -281,47 +314,29 @@ async function main() {
   console.log(c.cyan(`\n${addedIcons.length} icon(s) registered: ${addedIcons.join(', ')}`));
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Phase 2: Export fonts (using nucleo-export.js / export-cli.mjs)
+  // Phase 2: Export Fonts
   // ══════════════════════════════════════════════════════════════════════════
   console.log(c.cyan('\n=== Phase 2: Export Fonts ==='));
-  console.log('Run the font export for all 4 sets. Use one of:\n');
-  console.log('  node export-cli.mjs          (interactive CLI)');
-  console.log('  node nucleo-export.js        (direct, needs EXPORT_CONFIG env)\n');
-  console.log('Export settings per set:');
-  console.log('');
-  console.log('  Metadata (same for all sets):');
-  console.log('    Author:      Klara Design');
-  console.log('    Description: Built on Streamline 3.0');
-  console.log('    Copyright:   Klara Design\n');
+  console.log(`Exporting all 4 sets: ${STYLE_ORDER.join(', ')}\n`);
 
-  for (const style of STYLE_ORDER) {
-    const cfg     = EXPORT_SETTINGS[style];
-    const saveDir = EXPORT_DIRS[style];
-    console.log(`  [${style}]`);
-    console.log(`    Font name   : ${cfg.fontName}`);
-    console.log(`    Base class  : ${cfg.baseClass}`);
-    console.log('    Class prefix: st-');
-    console.log(`    Output dir  : ${saveDir}\n`);
-  }
-
-  const ready = await confirm({
-    message: 'Have you exported all 4 sets?',
-    default: false,
-  });
-  if (!ready) {
-    console.log(c.yellow('Aborted. Re-run the script after completing the exports.'));
+  const proceedExport = await confirm({ message: 'Run font export now?', default: true });
+  if (!proceedExport) {
+    console.log(c.yellow('Skipped. Re-run the script or run export-cli.mjs manually.'));
     process.exit(0);
   }
 
-  // Verify exported font folders exist
-  const missingExports = STYLE_ORDER.filter(
-    style => !fs.existsSync(path.join(EXPORT_DIRS[style], 'fonts')),
-  );
-  if (missingExports.length > 0) {
-    console.error(c.red(`ERROR: Missing exported fonts for: ${missingExports.join(', ')}`));
-    console.error(c.yellow('Ensure the export ran successfully and saved to the correct folders.'));
-    process.exit(1);
+  for (const style of STYLE_ORDER) {
+    console.log(c.cyan(`\n  ━━━ ${FONT_EXPORT_CONFIGS[style].iconfont.fontname} ━━━`));
+    await spawnExport(
+      NUCLEO_EXPORT_SCRIPT,
+      NC_PROJECTS[style].dir,
+      EXPORT_DIRS[style],
+      FONT_EXPORT_CONFIGS[style],
+    );
+    console.log(c.green(`  ✓ ${style} done`));
   }
+
+  console.log(c.green('\nAll 4 font sets exported successfully.'));
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 3: Copy to klara-theme

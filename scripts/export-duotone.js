@@ -8,11 +8,10 @@
  *   Interactively searches UX Duotone source assets as you type.
  *   Pick an illustration, register it, then loop to add more.
  *
- * Phase 2 — Export (run separately):
- *   Run `node nucleo-sprite.js` (or `node export-cli.mjs`) to generate the
- *   SVG symbol sprite. This script pauses and waits for confirmation.
- *   Note: If color replacement (ReplaceColorsInDuotone) is needed, run that
- *   bat script first before running Phase 2.
+ * Phase 2 — Export (automatic):
+ *   Generates the SVG symbol sprite via nucleo-sprite.js, then automatically
+ *   applies the Streamline duotone color → CSS-variable replacements
+ *   (ported from ReplaceColorsInDuotone.bat). Output goes to output/ subdir.
  *
  * Phase 3 — Deploy to klara-theme:
  *   Copies the exported SVG sprite to klara-theme.
@@ -34,8 +33,9 @@ const { search, confirm } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
-  validateJson, writeProjectNucleo, parseArgs, stripLeadingSlash,
+  validateJson, writeProjectNucleo, parseArgs, stripLeadingSlash, spawnExport,
 } = require('./lib/common');
+const { replaceColorsDuotone } = require('./lib/replace-colors-duotone');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -58,7 +58,25 @@ const NUCLEO_PATH        = path.join(NC_PROJECT_DIR, 'project.nucleo');
 
 const OUTPUT_SUBDIR      = stripLeadingSlash(process.env.OUTPUT_SUBDIR_ILLUSTRATIONS_DUOTONE || '_Assets/StreamlineDuotoneIcons');
 const OUTPUT_DIR         = path.join(PROJECT_ROOT, OUTPUT_SUBDIR);
-const EXPORT_SVG         = path.join(OUTPUT_DIR, 'img', 'streamline-icon-duotone.svg');
+const SPRITE_INPUT_SVG   = path.join(OUTPUT_DIR, 'img',    'streamline-icon-duotone.svg');
+const EXPORT_SVG         = path.join(OUTPUT_DIR, 'output', 'streamline-icon-duotone.svg');
+
+// Path to the sprite-generation script (project root)
+const NUCLEO_SPRITE_SCRIPT = path.join(__dirname, '..', 'nucleo-sprite.js');
+
+const SPRITE_CONFIG = {
+  svgsprite: {
+    baseClass:      'streamline-icon-duotone',
+    idPrefix:       'streamline-icon-duotone-',
+    assetsPath:     'img',
+    fileName:       'streamline-icon-duotone.svg',
+    metadataEnable: true,
+    metadata: {
+      author: 'Klara Design', description: 'Built on Streamline', version: '0.1',
+      copyright: 'Klara Design', license: '', url: '',
+    },
+  },
+};
 
 // ─── Search helper ───────────────────────────────────────────────────────────
 
@@ -182,31 +200,17 @@ async function main() {
   console.log(c.cyan(`\n${addedIcons.length} illustration(s) registered: ${addedIcons.join(', ')}`))
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Phase 2: Export sprite (using nucleo-sprite.js / export-cli.mjs)
+  // Phase 2: Export Sprite
   // ══════════════════════════════════════════════════════════════════════════
-  const saveDir = path.join(OUTPUT_DIR, 'img');
-  console.log('');
   console.log(c.cyan('\n=== Phase 2: Export Sprite ==='));
-  console.log('Run the sprite export. Use one of:\n');
-  console.log('  node export-cli.mjs          (interactive CLI, select streamline-illustrations-duotone)');
-  console.log(`  node nucleo-sprite.js "${NC_PROJECT_DIR}" "${OUTPUT_DIR}"\n`);
-  console.log('If color replacement is needed, run ReplaceColorsInDuotone.bat first.\n');
-  console.log('Export settings:');
-  console.log('  Project          : App / Illustrations / Duotone');
-  console.log('  Format           : SVG symbol');
-  console.log('  Base CSS Class   : streamline-icon-duotone');
-  console.log('  Icon ID Prefix   : streamline-icon-duotone-');
-  console.log('  File name        : streamline-icon-duotone.svg');
-  console.log(`  Save to          : ${saveDir}`);
 
-  const ready = await confirm({
-    message: '\nHave you completed the export?',
-    default: false,
-  });
-  if (!ready) {
-    console.log(c.yellow('Aborted. Re-run the script after completing the export.'));
-    process.exit(0);
-  }
+  console.log(c.yellow('\nGenerating SVG sprite...'));
+  await spawnExport(NUCLEO_SPRITE_SCRIPT, NC_PROJECT_DIR, OUTPUT_DIR, SPRITE_CONFIG);
+  console.log(c.green('Sprite export complete.'));
+
+  console.log(c.yellow('Applying color replacements...'));
+  replaceColorsDuotone(SPRITE_INPUT_SVG, EXPORT_SVG);
+  console.log(c.green(`Color-replaced sprite written to: ${EXPORT_SVG}`));
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 3: Copy to klara-theme

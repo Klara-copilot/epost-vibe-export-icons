@@ -113,6 +113,9 @@ const ALL_FONT_STYLES = [
   'streamline-icons-light',
 ];
 
+// improveOutline should be true for stroke-based sets (Regular + Light)
+const IMPROVE_OUTLINE_STYLES = new Set(['streamline-icons-light', 'streamline-icons-regular']);
+
 // ─── Environment-driven path helpers ─────────────────────────────────────────
 
 const expandHome = p => (p && p.startsWith('~') ? join(homedir(), p.slice(1)) : p);
@@ -184,7 +187,7 @@ function buildDefaultConfig(style) {
       classnamebase:  preset.classnamebase,
       encode:         false,
       ligatures:      false,
-      improveOutline: false,
+        improveOutline: IMPROVE_OUTLINE_STYLES.has(style),
       metrics:        { enable: false, ascent: '256', descent: '0' },
       metadataEnable: true,
       metadata,

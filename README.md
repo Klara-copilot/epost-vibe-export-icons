@@ -123,20 +123,52 @@ Used by the helper import scripts (`scripts/export-illustration.js`, `scripts/ex
 
 ## Usage
 
-### Interactive CLI (recommended)
+### `npm start` — unified entry point (recommended)
+
+```bash
+npm start
+```
+
+Presents a menu and delegates to the chosen pipeline:
+
+```
+=== Streamline Icon Export Pipeline ===
+
+? Export pipeline
+❯ Icon fonts       — Light / Regular / Bold / Glyph (generates .woff2, .ttf, SCSS map)
+  Duotone sprites  — SVG symbol sprite with CSS variable color replacement
+  Illustrations    — SVG symbol sprite (Steamline Filled + UX Line)
+```
+
+Extra flags are forwarded to the selected script:
+
+```bash
+npm start -- --theme-path /path/to/klara-theme
+npm start -- --name "Lock Shield"    # pre-fills the first icon search
+```
+
+### Helper scripts (direct invocation)
+
+Each pipeline can also be run directly without the menu:
+
+| Script | Purpose |
+|---|---|
+| `node scripts/export-icon.js` | Icon fonts — Light / Regular / Bold / Glyph |
+| `node scripts/export-duotone.js` | Duotone SVG sprite |
+| `node scripts/export-illustration.js` | Illustration SVG sprite |
+
+All three scripts are **fully interactive**:
+1. **Phase 1 — Search & Register**: live fuzzy search as you type → pick an icon → register in `project.nucleo` → loop to add more
+2. **Phase 2 — Export**: automatically spawns `nucleo-export.js` / `nucleo-sprite.js` (no manual step required)
+3. **Phase 3 — Deploy**: copies output to klara-theme (requires `--theme-path`)
+
+### Interactive CLI (low-level)
 
 ```bash
 npm run cli
 # or
 node export-cli.mjs
 ```
-
-The CLI will:
-1. Ask which style to export (glyph / regular / bold / light / illustrations / duotone / illustrations-3)
-2. Prompt for metadata (author, version, description, copyright) — all have sensible defaults
-3. Prompt for font settings (font name, class prefix, base class) — pre-filled from the style preset
-4. Confirm the project directory and output directory (derived automatically from `.env`)
-5. Ask for final confirmation, then launch the appropriate script
 
 ### Direct script invocation
 

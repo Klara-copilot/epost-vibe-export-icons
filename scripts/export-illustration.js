@@ -34,7 +34,7 @@ const { search, confirm } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
   readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
-  validateJson, parseArgs, stripLeadingSlash,
+  validateJson, parseArgs, stripLeadingSlash, spawnExport,
 } = require('./lib/common');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -63,6 +63,23 @@ const NUCLEO_PATH     = path.join(NC_PROJECT_DIR, 'project.nucleo');
 
 const OUTPUT_SUBDIR   = stripLeadingSlash(process.env.OUTPUT_SUBDIR_ILLUSTRATIONS || '_Assets/StreamlineIllustrator');
 const EXPORT_DIR      = path.join(PROJECT_ROOT, OUTPUT_SUBDIR, 'img');
+
+// Path to the sprite-generation script (project root)
+const NUCLEO_SPRITE_SCRIPT = path.join(__dirname, '..', 'nucleo-sprite.js');
+
+const SPRITE_CONFIG = {
+  svgsprite: {
+    baseClass:      'streamline-icon',
+    idPrefix:       'streamline-icon-',
+    assetsPath:     'img',
+    fileName:       'streamline-icons.svg',
+    metadataEnable: true,
+    metadata: {
+      author: 'Klara Design', description: 'Built on Streamline', version: '0.1',
+      copyright: 'Klara Design', license: '', url: '',
+    },
+  },
+};
 
 // ─── Source labels for display ─────────────────────────────────────────────────────
 
@@ -204,38 +221,14 @@ async function main() {
   console.log(c.cyan(`\n${addedIcons.length} illustration(s) registered: ${addedIcons.join(', ')}`));
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Phase 2: Export sprite (using nucleo-sprite.js / export-cli.mjs)
+  // Phase 2: Export Sprite
   // ══════════════════════════════════════════════════════════════════════════
   console.log(c.cyan('\n=== Phase 2: Export Sprite ==='));
-  console.log('Run the sprite export. Use one of:\n');
-  console.log('  node export-cli.mjs          (interactive CLI, select streamline-illustrations)');
-  console.log(`  node nucleo-sprite.js "${NC_PROJECT_DIR}" "${path.join(PROJECT_ROOT, OUTPUT_SUBDIR)}"\n`);
-  console.log('Export settings:\n');
-  console.log('  [Save As]');
-  console.log('    Format        : SVG\n');
-  console.log('  [SVG Options]');
-  console.log('    SVG Type      : SVG <symbol>\n');
-  console.log('  [General]');
-  console.log('    Base Class    : streamline-icon');
-  console.log('    Icon ID Prefix: streamline-icon-\n');
-  console.log('  [Advanced Options]');
-  console.log('    Use external reference for <use> : Checked');
-  console.log('    Assets Path                      : img');
-  console.log('    Remove inline colors             : Unchecked');
-  console.log('    Remove stroke-width values       : Unchecked');
-  console.log('    Remove <title> element           : Checked');
-  console.log('    Use BEM naming convention        : Unchecked');
-  console.log('    Use CSS custom properties        : Checked\n');
-  console.log(`  Save to: ${EXPORT_DIR}\n`);
+  console.log(c.yellow('Generating SVG sprite...'));
 
-  const ready = await confirm({
-    message: 'Have you completed the export?',
-    default: false,
-  });
-  if (!ready) {
-    console.log(c.yellow('Aborted. Re-run the script after completing the export.'));
-    process.exit(0);
-  }
+  const outputDir = path.join(PROJECT_ROOT, OUTPUT_SUBDIR);
+  await spawnExport(NUCLEO_SPRITE_SCRIPT, NC_PROJECT_DIR, outputDir, SPRITE_CONFIG);
+  console.log(c.green('Sprite export complete.'));
 
   // Verify exported SVG(s) exist
   const exportedFiles = fs.existsSync(EXPORT_DIR)
