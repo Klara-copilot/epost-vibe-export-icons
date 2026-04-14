@@ -71,6 +71,17 @@ const STYLE_PRESETS = {
     assetsPath:    'img',
     fileName:      'streamline-icons.svg',
   },
+  'streamline-illustrations-3': {
+    fontname:      'streamline-illustrations-3',
+    classnamebase: 'sti3',
+    classprefix:   'st-',
+    version:       '0.1',
+    pipeline:      'sprite',
+    baseClass:     'streamline-icon',
+    idPrefix:      'streamline-icon-',
+    assetsPath:    'img',
+    fileName:      'streamline-icons.svg',
+  },
 };
 
 const SHARED_METADATA = {
@@ -95,6 +106,7 @@ const STYLE_UUIDS = {
   'streamline-icons-light':              process.env.NUCLEO_UUID_LIGHT,
   'streamline-illustrations':            process.env.NUCLEO_UUID_ILLUSTRATIONS,
   'streamline-illustrations-duotone':    process.env.NUCLEO_UUID_ILLUSTRATIONS_DUOTONE,
+  'streamline-illustrations-3':           process.env.NUCLEO_UUID_ILLUSTRATIONS_PART3,
 };
 
 // Output subdirectories (relative to PROJECT_ROOT) per style
@@ -105,6 +117,7 @@ const STYLE_OUTPUT_SUBDIRS = {
   'streamline-icons-light':              process.env.OUTPUT_SUBDIR_LIGHT,
   'streamline-illustrations':            process.env.OUTPUT_SUBDIR_ILLUSTRATIONS,
   'streamline-illustrations-duotone':    process.env.OUTPUT_SUBDIR_ILLUSTRATIONS_DUOTONE,
+  'streamline-illustrations-3':           process.env.OUTPUT_SUBDIR_ILLUSTRATIONS_PART3,
 };
 
 const defaultProjectDir = style =>
