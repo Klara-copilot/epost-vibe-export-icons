@@ -5,6 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node scripts/index.js",
+    "start:bundle": "node dist/index.bundle.js",
+    "build:bundle": "node esbuild.config.js",
+    "build:bundle:dev": "NODE_ENV=dev node esbuild.config.js",
+    "build:bundles": "node esbuild.config.advanced.js",
+    "build:bundles:dev": "NODE_ENV=dev node esbuild.config.advanced.js",
     "export": "node nucleo-export.js",
     "watch": "node nucleo-watch.js",
     "cli": "node export-cli.mjs",
@@ -23,5 +28,8 @@
     "nunjucks": "^3.2.4",
     "svgo": "^3.3.3",
     "webfont": "^11.2.26"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
   }
 }

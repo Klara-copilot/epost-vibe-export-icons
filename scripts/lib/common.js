@@ -157,9 +157,17 @@ function spawnExport(scriptPath, projectDir, outputDir, exportConfig) {
     const cfgPath = path.join(tmpDir, 'export-config.json');
     writeFileSync(cfgPath, JSON.stringify(exportConfig, null, 2), 'utf8');
 
+    // Bundle mode: all scripts are inside the single bundle file. Re-invoke it
+    // with --script <name> instead of spawning a separate .js file on disk.
+    const isBundle = path.basename(process.argv[1]).endsWith('.bundle.js');
+    const scriptName = path.basename(scriptPath, '.js'); // e.g. 'nucleo-export'
+    const args = isBundle
+      ? [process.argv[1], '--script', scriptName, projectDir, outputDir]
+      : [scriptPath, projectDir, outputDir];
+
     const child = spawn(
       process.execPath,
-      [scriptPath, projectDir, outputDir],
+      args,
       { env: { ...process.env, EXPORT_CONFIG: cfgPath }, stdio: 'inherit' },
     );
     child.on('close', code => {

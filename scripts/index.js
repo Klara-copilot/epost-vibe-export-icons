@@ -25,6 +25,10 @@ const c = {
   bold:   s => `\x1b[1m${s}\x1b[0m`,
 };
 
+// In bundle mode (dist/vibe-icon.bundle.js) all scripts are co-located inside the
+// same file. Spawn the bundle itself with --script <name> instead of a sibling file.
+const isBundle = path.basename(process.argv[1]).endsWith('.bundle.js');
+
 const SCRIPTS = {
   icon:         path.join(__dirname, 'export-icon.js'),
   duotone:      path.join(__dirname, 'export-duotone.js'),
@@ -53,11 +57,14 @@ async function main() {
     ],
   });
 
-  const scriptPath = SCRIPTS[choice];
   // Forward any extra args passed after `npm start --`
   const extraArgs = process.argv.slice(2);
+  // Bundle mode: re-invoke this bundle with --script <name>; source mode: spawn sibling .js file
+  const spawnArgs = isBundle
+    ? [process.argv[1], '--script', choice, ...extraArgs]
+    : [SCRIPTS[choice], ...extraArgs];
 
-  const child = spawn(process.execPath, [scriptPath, ...extraArgs], {
+  const child = spawn(process.execPath, spawnArgs, {
     stdio: 'inherit',
     env:   process.env,
   });
