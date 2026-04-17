@@ -25,6 +25,10 @@ const c = {
   bold:   s => `\x1b[1m${s}\x1b[0m`,
 };
 
+// In bundle mode (dist/vibe-icon.bundle.js) all scripts are co-located inside the
+// same file. Spawn the bundle itself with --script <name> instead of a sibling file.
+const isBundle = path.basename(process.argv[1]).endsWith('.bundle.js');
+
 const SCRIPTS = {
   icon:         path.join(__dirname, 'export-icon.js'),
   duotone:      path.join(__dirname, 'export-duotone.js'),
@@ -33,31 +37,51 @@ const SCRIPTS = {
 
 async function main() {
   console.log(c.bold(c.cyan('\n=== Streamline Icon Export Pipeline ===')));
-  console.log(c.yellow('Select what you want to export:\n'));
 
-  const choice = await select({
-    message: 'Export pipeline',
-    choices: [
-      {
-        value: 'icon',
-        name:  'Icon fonts       — Light / Regular / Bold / Glyph (generates .woff2, .ttf, SCSS map)',
-      },
-      {
-        value: 'duotone',
-        name:  'Duotone sprites  — SVG symbol sprite with CSS variable color replacement',
-      },
-      {
-        value: 'illustration',
-        name:  'Illustrations    — SVG symbol sprite (Steamline Filled + UX Line)',
-      },
-    ],
-  });
+  // ── --pipeline bypasses the interactive select ────────────────────────────
+  const pipelineIdx  = process.argv.indexOf('--pipeline');
+  const cliPipeline  = pipelineIdx !== -1 ? process.argv[pipelineIdx + 1] : null;
+  const validPipelines = ['icon', 'duotone', 'illustration'];
 
-  const scriptPath = SCRIPTS[choice];
-  // Forward any extra args passed after `npm start --`
-  const extraArgs = process.argv.slice(2);
+  let choice;
+  if (cliPipeline) {
+    if (!validPipelines.includes(cliPipeline)) {
+      console.error(`\nFATAL: Invalid --pipeline "${cliPipeline}". Valid: ${validPipelines.join(', ')}`);
+      process.exit(1);
+    }
+    choice = cliPipeline;
+    console.log(c.yellow(`Pipeline: ${choice}\n`));
+  } else {
+    console.log(c.yellow('Select what you want to export:\n'));
+    choice = await select({
+      message: 'Export pipeline',
+      choices: [
+        {
+          value: 'icon',
+          name:  'Icon fonts       — Light / Regular / Bold / Glyph (generates .woff2, .ttf, SCSS map)',
+        },
+        {
+          value: 'duotone',
+          name:  'Duotone sprites  — SVG symbol sprite with CSS variable color replacement',
+        },
+        {
+          value: 'illustration',
+          name:  'Illustrations    — SVG symbol sprite (Steamline Filled + UX Line)',
+        },
+      ],
+    });
+  }
 
-  const child = spawn(process.execPath, [scriptPath, ...extraArgs], {
+  // Forward any extra args, stripping --pipeline <value> which was consumed here
+  const extraArgs = process.argv.slice(2).filter((a, i, arr) =>
+    a !== '--pipeline' && (i === 0 || arr[i - 1] !== '--pipeline')
+  );
+  // Bundle mode: re-invoke this bundle with --script <name>; source mode: spawn sibling .js file
+  const spawnArgs = isBundle
+    ? [process.argv[1], '--script', choice, ...extraArgs]
+    : [SCRIPTS[choice], ...extraArgs];
+
+  const child = spawn(process.execPath, spawnArgs, {
     stdio: 'inherit',
     env:   process.env,
   });

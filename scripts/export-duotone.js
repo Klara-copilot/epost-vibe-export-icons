@@ -29,6 +29,9 @@ const fs   = require('fs');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
+// --project-root overrides PROJECT_ROOT from .env (must run before config block)
+{ const i = process.argv.indexOf('--project-root'); if (i !== -1 && process.argv[i+1]) process.env.PROJECT_ROOT = process.argv[i+1]; }
+
 const { search, confirm, input } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
@@ -145,6 +148,30 @@ async function main() {
   // Load existing names once; kept in-sync after each registration
   const { existingNames } = readProjectNucleo(NUCLEO_PATH);
   const addedIcons = [];
+
+  if (args.names.length > 0) {
+    // ── Non-interactive: auto-register all --name values ──────────────────────
+    for (const name of args.names) {
+      console.log('');
+      const results = searchDuotone(name);
+      const match = results.find(r => r.basename.toLowerCase() === name.trim().toLowerCase())
+        || (results.length === 1 ? results[0] : null);
+      if (!match) {
+        const closest = results.slice(0, 5).map(r => `  • ${r.basename}`).join('\n');
+        console.error(c.red(`ERROR: Illustration "${name}" not found in duotone source.`));
+        if (closest) console.error(c.yellow('Closest matches:\n' + closest));
+        process.exit(1);
+      }
+      const added = registerIllustration(match, existingNames);
+      if (added) {
+        addedIcons.push(added);
+        console.log(c.green(`✓ '${added}' registered.`));
+      } else {
+        console.log(c.yellow(`'${name}' already exists — nothing added.`));
+      }
+    }
+  } else {
+  // ── Interactive loop ──────────────────────────────────────────────────────
   let isFirstSearch = true;
 
   while (true) {
@@ -193,6 +220,7 @@ async function main() {
     const addMore = await confirm({ message: '\nAdd another illustration?', default: true });
     if (!addMore) break;
   }
+  } // end interactive
 
   if (addedIcons.length === 0) {
     console.log(c.yellow('\nNo illustrations were added. Exiting.'));
@@ -219,6 +247,12 @@ async function main() {
   // ══════════════════════════════════════════════════════════════════════════
   console.log(c.cyan('\n=== Phase 3: Copy to klara-theme ==='));
 
+  if (args.skipCopy) {
+    console.log(c.yellow('\nPhase 3 skipped (--skip-copy).'));
+    console.log(c.cyan('\n=== Done! ==='));
+    process.exit(0);
+  }
+
   if (!fs.existsSync(EXPORT_SVG)) {
     console.error(c.red(`ERROR: Exported file not found at '${EXPORT_SVG}'.`));
     console.error(c.yellow('Ensure the export completed and the file was saved to the correct location.'));
@@ -234,14 +268,18 @@ async function main() {
     themePath = themePath.trim();
   }
 
-  const proceedCopy = await confirm({
-    message: `Copy duotone sprite to:\n  ${path.join(themePath, 'src', 'lib', 'assets', 'icons', 'streamline-icon-duotone.svg')}`,
-    default: true,
-  });
-  if (!proceedCopy) {
-    console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
-    console.log(c.cyan('\n=== Done! ==='));
-    process.exit(0);
+  if (!args.autoCopy) {
+    const proceedCopy = await confirm({
+      message: `Copy duotone sprite to:\n  ${path.join(themePath, 'src', 'lib', 'assets', 'icons', 'streamline-icon-duotone.svg')}`,
+      default: true,
+    });
+    if (!proceedCopy) {
+      console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
+      console.log(c.cyan('\n=== Done! ==='));
+      process.exit(0);
+    }
+  } else {
+    console.log(c.yellow(`Auto-copying to klara-theme (--auto-copy): ${themePath}`));
   }
 
   const klaraTarget = path.join(themePath, 'src', 'lib', 'assets', 'icons', 'streamline-icon-duotone.svg');

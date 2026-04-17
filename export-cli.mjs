@@ -13,6 +13,9 @@
 import { config } from 'dotenv';
 config();
 
+// --project-root overrides PROJECT_ROOT from .env (must run before config block)
+{ const i = process.argv.indexOf('--project-root'); if (i !== -1 && process.argv[i+1]) process.env.PROJECT_ROOT = process.argv[i+1]; }
+
 import { input, select, confirm, Separator } from '@inquirer/prompts';
 import { writeFileSync, mkdtempSync } from 'fs';
 import { join, resolve, dirname } from 'path';
@@ -299,36 +302,95 @@ function printSummary(exportConfig, projectDir, outputDir) {
   console.log(c.yellow(`  Output  : ${outputDir}\n`));
 }
 
+// ─── CLI arg parsing ──────────────────────────────────────────────────────────
+/**
+ *   --style <name>      Skip the interactive style select.
+ *                       Use any key from STYLE_PRESETS, e.g. 'streamline-icons-light'
+ *   --all-fonts         Equivalent to --style --all-fonts (batch export all font styles)
+ *   --use-defaults      Skip the "Use all defaults?" confirm (answer yes)
+ *   --project-root <p>  Override PROJECT_ROOT (base for all default paths)
+ *   --project-dir <p>   Override the project directory path (per-style nc-projects subdir)
+ *   --output-dir <p>    Override the output directory path
+ *   --skip-confirm      Skip the final "Run export?" confirmation
+ */
+function parseCliArgs() {
+  const args = process.argv.slice(2);
+  const result = {
+    style:       null,
+    allFonts:    false,
+    useDefaults: false,
+    projectRoot: null,
+    projectDir:  null,
+    outputDir:   null,
+    skipConfirm: false,
+  };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--style' && args[i + 1]) {
+      result.style = args[++i];
+    } else if (args[i] === '--all-fonts') {
+      result.allFonts = true;
+      result.style    = '--all-fonts';
+    } else if (args[i] === '--use-defaults') {
+      result.useDefaults = true;
+    } else if (args[i] === '--project-root' && args[i + 1]) {
+      result.projectRoot = args[++i];
+    } else if (args[i] === '--project-dir' && args[i + 1]) {
+      result.projectDir = args[++i];
+    } else if (args[i] === '--output-dir' && args[i + 1]) {
+      result.outputDir = args[++i];
+    } else if (args[i] === '--skip-confirm') {
+      result.skipConfirm = true;
+    }
+  }
+  return result;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   printHeader('Nucleo Export');
+  const cliArgs = parseCliArgs();
 
   // 1. Style selection (includes batch option)
-  const style = await select({
-    message: 'Which icon style would you like to export?',
-    choices: [
-      ...Object.keys(STYLE_PRESETS).map(s => ({ name: s, value: s })),
-      new Separator(),
-      {
-        name:  c.yellow('⚡ Export all icon fonts') + c.dim('  (glyph + regular + bold + light — all defaults)'),
-        value: '--all-fonts',
-      },
-    ],
-  });
+  let style;
+  if (cliArgs.style) {
+    style = cliArgs.style;
+    const validStyles = [...Object.keys(STYLE_PRESETS), '--all-fonts'];
+    if (!validStyles.includes(style)) {
+      console.error(c.red(`\n  FATAL: Unknown --style "${style}".\n  Valid: ${Object.keys(STYLE_PRESETS).join(', ')}, --all-fonts\n`));
+      process.exit(1);
+    }
+    console.log(c.dim(`  Style: ${style} (from --style)\n`));
+  } else {
+    style = await select({
+      message: 'Which icon style would you like to export?',
+      choices: [
+        ...Object.keys(STYLE_PRESETS).map(s => ({ name: s, value: s })),
+        new Separator(),
+        {
+          name:  c.yellow('⚡ Export all icon fonts') + c.dim('  (glyph + regular + bold + light — all defaults)'),
+          value: '--all-fonts',
+        },
+      ],
+    });
+  }
 
   // ── Batch: export all icon fonts with defaults ─────────────────────────────
   if (style === '--all-fonts') {
     console.log(c.bold(c.yellow('\n  Batch export: glyph + regular + bold + light\n')));
     console.log(c.dim('  All styles will use default settings.\n'));
 
-    const proceed = await confirm({ message: 'Run all 4 font exports?', default: true });
-    if (!proceed) { console.log(c.red('\n  Cancelled.\n')); process.exit(0); }
+    if (!cliArgs.skipConfirm) {
+      const proceed = await confirm({ message: 'Run all 4 font exports?', default: true });
+      if (!proceed) { console.log(c.red('\n  Cancelled.\n')); process.exit(0); }
+    }
 
     for (const s of ALL_FONT_STYLES) {
       console.log(c.bold(c.magenta(`\n  ━━━ ${s} ━━━\n`)));
       const exportConfig = buildDefaultConfig(s);
-      await spawnExport(exportConfig, defaultProjectDir(s), defaultOutputDir(s));
+      await spawnExport(exportConfig,
+        cliArgs.projectDir || defaultProjectDir(s),
+        cliArgs.outputDir  || defaultOutputDir(s));
       console.log(c.green(`  ✔  ${s} done\n`));
     }
 
@@ -344,26 +406,36 @@ async function main() {
   console.log(c.dim(`\n  Pipeline: ${pipeline}\n`));
 
   // 2. Skip-all option
-  const useDefaults = await confirm({
-    message: 'Use all defaults? ' + c.dim('(skip configuration prompts)'),
-    default: false,
-  });
+  let useDefaults;
+  if (cliArgs.useDefaults) {
+    useDefaults = true;
+    console.log(c.dim('  Using all defaults (from --use-defaults)\n'));
+  } else {
+    useDefaults = await confirm({
+      message: 'Use all defaults? ' + c.dim('(skip configuration prompts)'),
+      default: false,
+    });
+  }
 
   let exportConfig, projectDir, outputDir;
 
   if (useDefaults) {
     exportConfig = buildDefaultConfig(style);
-    projectDir   = defaultProjectDir(style);
-    outputDir    = defaultOutputDir(style);
+    projectDir   = cliArgs.projectDir || defaultProjectDir(style);
+    outputDir    = cliArgs.outputDir  || defaultOutputDir(style);
   } else {
     ({ exportConfig, projectDir, outputDir } = await promptExportFields(style));
+    if (cliArgs.projectDir) projectDir = cliArgs.projectDir;
+    if (cliArgs.outputDir)  outputDir  = cliArgs.outputDir;
   }
 
   // 3. Summary + confirm
   printSummary(exportConfig, projectDir, outputDir);
 
-  const proceed = await confirm({ message: 'Run export with this configuration?', default: true });
-  if (!proceed) { console.log(c.red('\n  Export cancelled.\n')); process.exit(0); }
+  if (!cliArgs.skipConfirm) {
+    const proceed = await confirm({ message: 'Run export with this configuration?', default: true });
+    if (!proceed) { console.log(c.red('\n  Export cancelled.\n')); process.exit(0); }
+  }
 
   console.log(c.bold(c.cyan(`\n  Exporting ${style}...\n`)));
   await spawnExport(exportConfig, projectDir, outputDir);
