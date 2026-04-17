@@ -30,7 +30,8 @@ const isDev = process.env.NODE_ENV === 'dev';
 
 // Read .env at build time and inline all vars via esbuild's define.
 // No .env file is needed at runtime in the bundle.
-const DYNAMIC_VARS = new Set(['DEBUG', 'NODE_ENV']);
+// PROJECT_ROOT must stay dynamic so --project-root can override it at runtime.
+const DYNAMIC_VARS = new Set(['DEBUG', 'NODE_ENV', 'PROJECT_ROOT']);
 
 function buildEnvDefines() {
   const envPath = path.join(process.cwd(), '.env');

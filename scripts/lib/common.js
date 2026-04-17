@@ -121,21 +121,52 @@ function writeProjectNucleo(nucleoPath, rawJson) {
 
 // ─── CLI arg parsing ──────────────────────────────────────────────────────────
 /**
- * Parse --name / --theme-path from process.argv.
+ * Parse CLI flags shared across all export scripts.
+ *
+ *   --name / -n <v>   Repeatable — provide multiple to skip Phase 1 prompts.
+ *                     result.name is always result.names[0] for backward-compat.
+ *   --theme-path / -t Target klara-theme directory (Phase 3)
+ *   --pipeline <v>    'icon' | 'duotone' | 'illustration'  (index.js only)
+ *   --skip-export     Skip Phase 2 font/sprite export      (export-icon.js)
+ *   --skip-copy       Skip Phase 3 copy to klara-theme     (all export scripts)
+ *
  * A bare first positional arg (no leading --) is treated as --name.
  */
 function parseArgs() {
   const args = process.argv.slice(2);
-  const result = { name: null, themePath: null };
+  const result = {
+    names:       [],
+    name:        null,   // = names[0], kept for backward-compat
+    themePath:   null,
+    pipeline:    null,
+    projectRoot: null,   // overrides process.env.PROJECT_ROOT
+    skipExport:  false,
+    skipCopy:    false,
+    autoExport:  false,
+    autoCopy:    false,
+  };
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '--name' || args[i] === '-n') && args[i + 1]) {
-      result.name = args[++i];
+      result.names.push(args[++i]);
     } else if ((args[i] === '--theme-path' || args[i] === '-t') && args[i + 1]) {
       result.themePath = args[++i];
-    } else if (!args[i].startsWith('-') && !result.name) {
-      result.name = args[i];
+    } else if (args[i] === '--pipeline' && args[i + 1]) {
+      result.pipeline = args[++i];
+    } else if ((args[i] === '--project-root' || args[i] === '-r') && args[i + 1]) {
+      result.projectRoot = args[++i];
+    } else if (args[i] === '--skip-export') {
+      result.skipExport = true;
+    } else if (args[i] === '--skip-copy') {
+      result.skipCopy = true;
+    } else if (args[i] === '--auto-export') {
+      result.autoExport = true;
+    } else if (args[i] === '--auto-copy') {
+      result.autoCopy = true;
+    } else if (!args[i].startsWith('-') && !result.names.length) {
+      result.names.push(args[i]);
     }
   }
+  result.name = result.names[0] || null;
   return result;
 }
 

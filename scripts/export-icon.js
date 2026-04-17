@@ -32,6 +32,9 @@ const fs   = require('fs');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
+// --project-root overrides PROJECT_ROOT from .env (must run before config block)
+{ const i = process.argv.indexOf('--project-root'); if (i !== -1 && process.argv[i+1]) process.env.PROJECT_ROOT = process.argv[i+1]; }
+
 const { search, select, confirm, input } = require('@inquirer/prompts');
 const {
   c, generateUuid, findSvgs,
@@ -212,6 +215,18 @@ async function registerIcon(iconName, iconFiles) {
   return registeredCount;
 }
 
+// ─── Exact-match icon lookup for non-interactive mode ─────────────────────────
+/**
+ * Find an icon whose name exactly matches (case-insensitive) across all 3 source
+ * dirs. Falls back to the sole result if there is exactly one match.
+ * Returns null when the name is ambiguous or not found.
+ */
+function findIconExact(name) {
+  const results = searchCommonIcons(name);
+  return results.find(r => r.name.toLowerCase() === name.trim().toLowerCase())
+    || (results.length === 1 ? results[0] : null);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -225,6 +240,33 @@ async function main() {
   console.log(c.cyan('\n=== Phase 1: Search & Register Icons ==='));
 
   const addedIcons = [];
+
+  if (args.names.length > 0) {
+    // ── Non-interactive: auto-register all --name values ──────────────────────
+    for (const name of args.names) {
+      console.log('');
+      const icon = findIconExact(name);
+      if (!icon) {
+        const closest = searchCommonIcons(name).slice(0, 5).map(r => `  • ${r.name}`).join('\n');
+        console.error(c.red(`ERROR: Icon "${name}" not found in all 3 source dirs (Light, Regular, Bold).`));
+        if (closest) console.error(c.yellow('Closest matches:\n' + closest));
+        process.exit(1);
+      }
+      for (const style of ['Light', 'Regular', 'Bold']) {
+        const rel = icon.files[style].fullPath.replace(SOURCE_DIRS[style] + path.sep, '');
+        console.log(c.green(`  [${style}] ${rel}`));
+      }
+      console.log(c.yellow(`  [GLYPH] Reusing Bold source: ${icon.name}`));
+      const registeredCount = await registerIcon(icon.name, icon.files);
+      if (registeredCount > 0) {
+        addedIcons.push(icon.name);
+        console.log(c.green(`✓ '${icon.name}' registered in ${registeredCount} project(s).`));
+      } else {
+        console.log(c.yellow(`'${icon.name}' already present in all 4 projects.`));
+      }
+    }
+  } else {
+  // ── Interactive loop ──────────────────────────────────────────────────────
   let isFirstSearch = true;
 
   while (true) {
@@ -307,6 +349,7 @@ async function main() {
     const addMore = await confirm({ message: '\nAdd another icon?', default: true });
     if (!addMore) break;
   }
+  } // end interactive
 
   if (addedIcons.length === 0) {
     console.log(c.yellow('\nNo icons were added. Exiting.'));
@@ -321,29 +364,43 @@ async function main() {
   console.log(c.cyan('\n=== Phase 2: Export Fonts ==='));
   console.log(`Exporting all 4 sets: ${STYLE_ORDER.join(', ')}\n`);
 
-  const proceedExport = await confirm({ message: 'Run font export now?', default: true });
-  if (!proceedExport) {
-    console.log(c.yellow('Skipped. Re-run the script or run export-cli.mjs manually.'));
-    process.exit(0);
-  }
+  if (args.skipExport) {
+    console.log(c.yellow('\nPhase 2 skipped (--skip-export).'));
+  } else {
+    if (!args.autoExport) {
+      const proceedExport = await confirm({ message: 'Run font export now?', default: true });
+      if (!proceedExport) {
+        console.log(c.yellow('Skipped. Re-run the script or run export-cli.mjs manually.'));
+        process.exit(0);
+      }
+    } else {
+      console.log(c.yellow('Auto-running font export (--auto-export).'));
+    }
 
-  for (const style of STYLE_ORDER) {
-    console.log(c.cyan(`\n  ━━━ ${FONT_EXPORT_CONFIGS[style].iconfont.fontname} ━━━`));
-    await spawnExport(
-      NUCLEO_EXPORT_SCRIPT,
-      NC_PROJECTS[style].dir,
-      EXPORT_DIRS[style],
-      FONT_EXPORT_CONFIGS[style],
-    );
-    console.log(c.green(`  ✓ ${style} done`));
-  }
+    for (const style of STYLE_ORDER) {
+      console.log(c.cyan(`\n  ━━━ ${FONT_EXPORT_CONFIGS[style].iconfont.fontname} ━━━`));
+      await spawnExport(
+        NUCLEO_EXPORT_SCRIPT,
+        NC_PROJECTS[style].dir,
+        EXPORT_DIRS[style],
+        FONT_EXPORT_CONFIGS[style],
+      );
+      console.log(c.green(`  ✓ ${style} done`));
+    }
 
-  console.log(c.green('\nAll 4 font sets exported successfully.'));
+    console.log(c.green('\nAll 4 font sets exported successfully.'));
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // Phase 3: Copy to klara-theme
   // ══════════════════════════════════════════════════════════════════════════
   console.log(c.cyan('\n=== Phase 3: Copy to klara-theme ==='));
+
+  if (args.skipCopy) {
+    console.log(c.yellow('\nPhase 3 skipped (--skip-copy).'));
+    console.log(c.cyan('\n=== Done! ==='));
+    process.exit(0);
+  }
 
   if (!themePath) {
     console.log(c.yellow('No --theme-path provided.'));
@@ -354,14 +411,18 @@ async function main() {
     themePath = themePath.trim();
   }
 
-  const proceedCopy = await confirm({
-    message: `Copy font files + SCSS map to:\n  ${themePath}`,
-    default: true,
-  });
-  if (!proceedCopy) {
-    console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
-    console.log(c.cyan('\n=== Done! ==='));
-    process.exit(0);
+  if (!args.autoCopy) {
+    const proceedCopy = await confirm({
+      message: `Copy font files + SCSS map to:\n  ${themePath}`,
+      default: true,
+    });
+    if (!proceedCopy) {
+      console.log(c.yellow('Copy skipped. Re-run with --theme-path to copy manually.'));
+      console.log(c.cyan('\n=== Done! ==='));
+      process.exit(0);
+    }
+  } else {
+    console.log(c.yellow(`Auto-copying to klara-theme (--auto-copy): ${themePath}`));
   }
 
   // 3a. Copy font files from all 4 sets

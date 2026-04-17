@@ -37,28 +37,45 @@ const SCRIPTS = {
 
 async function main() {
   console.log(c.bold(c.cyan('\n=== Streamline Icon Export Pipeline ===')));
-  console.log(c.yellow('Select what you want to export:\n'));
 
-  const choice = await select({
-    message: 'Export pipeline',
-    choices: [
-      {
-        value: 'icon',
-        name:  'Icon fonts       — Light / Regular / Bold / Glyph (generates .woff2, .ttf, SCSS map)',
-      },
-      {
-        value: 'duotone',
-        name:  'Duotone sprites  — SVG symbol sprite with CSS variable color replacement',
-      },
-      {
-        value: 'illustration',
-        name:  'Illustrations    — SVG symbol sprite (Steamline Filled + UX Line)',
-      },
-    ],
-  });
+  // ── --pipeline bypasses the interactive select ────────────────────────────
+  const pipelineIdx  = process.argv.indexOf('--pipeline');
+  const cliPipeline  = pipelineIdx !== -1 ? process.argv[pipelineIdx + 1] : null;
+  const validPipelines = ['icon', 'duotone', 'illustration'];
 
-  // Forward any extra args passed after `npm start --`
-  const extraArgs = process.argv.slice(2);
+  let choice;
+  if (cliPipeline) {
+    if (!validPipelines.includes(cliPipeline)) {
+      console.error(`\nFATAL: Invalid --pipeline "${cliPipeline}". Valid: ${validPipelines.join(', ')}`);
+      process.exit(1);
+    }
+    choice = cliPipeline;
+    console.log(c.yellow(`Pipeline: ${choice}\n`));
+  } else {
+    console.log(c.yellow('Select what you want to export:\n'));
+    choice = await select({
+      message: 'Export pipeline',
+      choices: [
+        {
+          value: 'icon',
+          name:  'Icon fonts       — Light / Regular / Bold / Glyph (generates .woff2, .ttf, SCSS map)',
+        },
+        {
+          value: 'duotone',
+          name:  'Duotone sprites  — SVG symbol sprite with CSS variable color replacement',
+        },
+        {
+          value: 'illustration',
+          name:  'Illustrations    — SVG symbol sprite (Steamline Filled + UX Line)',
+        },
+      ],
+    });
+  }
+
+  // Forward any extra args, stripping --pipeline <value> which was consumed here
+  const extraArgs = process.argv.slice(2).filter((a, i, arr) =>
+    a !== '--pipeline' && (i === 0 || arr[i - 1] !== '--pipeline')
+  );
   // Bundle mode: re-invoke this bundle with --script <name>; source mode: spawn sibling .js file
   const spawnArgs = isBundle
     ? [process.argv[1], '--script', choice, ...extraArgs]
