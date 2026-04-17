@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node scripts/index.js",
     "start:bundle": "node dist/index.bundle.js",
+    "start:workflow": "node scripts/workflow.js",
+    "start:workflow:bundle": "node dist/workflow.bundle.js",
     "build:bundle": "node esbuild.config.js",
     "build:bundle:dev": "NODE_ENV=dev node esbuild.config.js",
     "build:bundles": "node esbuild.config.advanced.js",
@@ -23,9 +25,12 @@
     "@inquirer/prompts": "^7.10.1",
     "@resvg/resvg-js": "^2.6.2",
     "chokidar": "^3.6.0",
+    "diff": "^9.0.0",
     "dotenv": "^16.6.1",
+    "fast-glob": "^3.3.3",
     "fs-extra": "^11.3.4",
     "nunjucks": "^3.2.4",
+    "simple-git": "^3.36.0",
     "svgo": "^3.3.3",
     "webfont": "^11.2.26"
   },

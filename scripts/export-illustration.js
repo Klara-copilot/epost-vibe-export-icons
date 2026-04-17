@@ -72,8 +72,8 @@ const NUCLEO_SPRITE_SCRIPT = path.join(__dirname, '..', 'nucleo-sprite.js');
 
 const SPRITE_CONFIG = {
   svgsprite: {
-    baseClass:      'streamline-icon',
-    idPrefix:       'streamline-icon-',
+    baseClass:      'streamline-icons',
+    idPrefix:       'streamline-icons-',
     assetsPath:     'img',
     fileName:       'streamline-icons.svg',
     metadataEnable: true,
