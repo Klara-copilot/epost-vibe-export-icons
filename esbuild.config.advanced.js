@@ -61,7 +61,7 @@ function sharedOptions(envDefines) {
     minify: !isDev,
     sourcemap: isDev ? 'inline' : false,
     logLevel: 'info',
-    external: ['@resvg/resvg-js'], // Native module — cannot be bundled
+    external: ['@resvg/resvg-js', 'fsevents', 'chokidar'], // Native module — cannot be bundled
     define: {
       'process.env.NODE_ENV': isDev ? '"development"' : '"production"',
       ...envDefines,

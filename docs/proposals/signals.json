@@ -1,0 +1,16 @@
+{
+  "generated": "2026-04-21T06:50:30.338Z",
+  "summary": {
+    "total": 0,
+    "new": 0,
+    "proposed": 0,
+    "dismissed": 0,
+    "bySkill": {},
+    "byType": {
+      "journal-flag": 0,
+      "audit-failure": 0,
+      "workaround": 0
+    }
+  },
+  "signals": []
+}

@@ -83,7 +83,7 @@ const log = {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const GIT_REPO_URL = 'git@bitbucket.org:axonivy-prod/theme_icons.git';
+const GIT_REPO_URL = 'git@bitbucket-nhut:axonivy-prod/theme_icons.git';
 const PR_BASE_URL  = 'https://bitbucket.org/axonivy-prod/theme_icons/pull-requests/new';
 
 // nc-projects folder UUIDs (Nucleo 22-char hex format) per pipeline type.
@@ -851,6 +851,25 @@ async function main() {
     }
 
     result.status = Object.values(result.pipelines).some(p => p.failed.length > 0) ? 'partial' : 'success';
+
+    // ── Red-bull cleanup: checkout master on both repos ───────────────────
+    if (args.redBull && !args.skipGit) {
+      log.section('Phase 5 — Checkout master (--red-bull cleanup)');
+      try {
+        await simpleGit(workRoot).checkout('master');
+        log.ok(`${path.basename(workRoot)} → master`);
+      } catch (err) {
+        log.warn(`Could not checkout master in ${path.basename(workRoot)}: ${err.message}`);
+      }
+      if (luzNextRoot) {
+        try {
+          await simpleGit(luzNextRoot).checkout('master');
+          log.ok(`${path.basename(luzNextRoot)} → master`);
+        } catch (err) {
+          log.warn(`Could not checkout master in ${path.basename(luzNextRoot)}: ${err.message}`);
+        }
+      }
+    }
 
   } catch (err) {
     log.error(`Fatal: ${err.message}`);
