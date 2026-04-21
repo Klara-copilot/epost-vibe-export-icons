@@ -2,29 +2,34 @@
 /**
  * scripts/workflow.js  — Full-lifecycle icon export orchestrator
  *
- * Wraps the entire icon export workflow into a single command so an AI agent
- * (or developer) only needs to supply icon names. The script handles:
+ * Wraps the entire icon export workflow into a single command supporting multiple
+ * pipelines in a single invocation. Allows mixing icons, duotones, and illustrations.
+ * The script handles:
  *
- *   1. Fresh git clone of the theme_icons repo into an isolated temp directory
+ *   1. Fresh git clone of the theme_icons repo into an isolated temp directory (or use --red-bull)
  *   2. Physical audit — check which icons already exist in project.nucleo files
  *   3. Export via the existing pipeline (scripts/index.js or dist/index.bundle.js)
- *   4. Git: checkout branch → commit (conventional) → push
+ *   4. Git: checkout branch → commit (conventional) → push (consolidates all pipelines)
  *   5. Print a machine-readable JSON result to stdout and cleanup
  *
  * Usage:
- *   node scripts/workflow.js --pipeline icon --name "Lock Shield" --theme-path /path/to/klara-theme
- *   node scripts/workflow.js --pipeline duotone --name "Love Swan" --name "Kiwi Bird" --theme-path /path
- *   node scripts/workflow.js --pipeline illustration --name "Armed Jeep" --theme-path /path
+ *   node scripts/workflow.js --icon "Lock Shield" --theme-path /path/to/klara-theme
+ *   node scripts/workflow.js --icon "Lock Shield" --duotone "Love Swan" --illustration "Armed Jeep" --theme-path /path
+ *   node scripts/workflow.js --duotone "Heart" --duotone "Star" --theme-path /path
  *
  * Flags:
- *   --pipeline <icon|duotone|illustration>   Required
- *   --name "Icon Name"                        Repeatable, required (at least one)
+ *   --icon "Icon Name"                        Repeatable, optional (at least one pipeline required)
+ *   --duotone "Duotone Name"                  Repeatable, optional
+ *   --illustration "Illustration Name"        Repeatable, optional
  *   --theme-path <path>                       Required (target klara-theme directory)
  *   --branch-id <id>                          Optional; defaults to current timestamp
  *   --skip-git                                Skip git operations (useful for dry-runs)
- *   --skip-cleanup                            Keep TEMP_ROOT after run (for debugging)
+ *   --skip-cleanup                            Keep TEMP_ROOT after run; silently ignored with --red-bull
  *   --git-name <name>                         Override git author name
  *   --git-email <email>                       Override git author email
+ *   --red-bull                                Operate directly on real repos (no temp dirs).
+ *                                             Requires PROJECT_ROOT (.env) to be set.
+ *                                             Repos must be on 'master' with a clean tree.
  *
  * Exit codes:
  *   0  — success (some icons may be in alreadyDone, that is not a failure)
@@ -38,10 +43,12 @@
  *     "status": "success" | "partial" | "failed",
  *     "prUrl": "https://bitbucket.org/...",
  *     "branchName": "feature/export-icons-{ID}",
- *     "icons": {
- *       "exported": ["Icon Name"],
- *       "alreadyDone": ["Other Icon"],
- *       "failed": []
+ *     "luzNextPrUrl": "...",
+ *     "luzNextBranchName": "...",
+ *     "pipelines": {
+ *       "icon":         { "exported": ["Icon Name"], "alreadyDone": ["Other Icon"], "failed": [] },
+ *       "duotone":      { "exported": [], "alreadyDone": [], "failed": [] },
+ *       "illustration": { "exported": [], "alreadyDone": [], "failed": [] }
  *     },
  *     "diff": "--- a/icons-map.scss\n+++ b/icons-map.scss\n...",
  *     "error": null
@@ -120,33 +127,35 @@ const MY_SETS_SUBPATH = '_Assets/my-sets';
 function parseArgs() {
   const argv  = process.argv.slice(2);
   const result = {
-    pipeline:   null,
-    names:      [],
+    icons:      [],
+    duotones:   [],
+    illustrations: [],
     themePath:  null,
     branchId:   String(Date.now()),
     skipGit:    false,
     skipCleanup: false,
     gitName:    null,
     gitEmail:   null,
+    redBull:    false,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = argv[i + 1];
     switch (a) {
-      case '--pipeline':   result.pipeline  = next; i++; break;
-      case '--name': case '-n': result.names.push(next); i++; break;
+      case '--icon': result.icons.push(next); i++; break;
+      case '--duotone': result.duotones.push(next); i++; break;
+      case '--illustration': result.illustrations.push(next); i++; break;
       case '--theme-path': case '-t': result.themePath = next; i++; break;
       case '--branch-id':  result.branchId  = next; i++; break;
       case '--skip-git':   result.skipGit   = true; break;
       case '--skip-cleanup': result.skipCleanup = true; break;
       case '--git-name':   result.gitName   = next; i++; break;
       case '--git-email':  result.gitEmail  = next; i++; break;
+      case '--red-bull':   result.redBull   = true; break;
       default:
-        if (!a.startsWith('-')) {
-          // bare positional = icon name
-          result.names.push(a);
-        }
+        // ignore unknown flags
+        break;
     }
   }
 
@@ -155,15 +164,25 @@ function parseArgs() {
 
 function validateArgs(args) {
   const errors = [];
-  if (!args.pipeline || !VALID_PIPELINES.includes(args.pipeline)) {
-    errors.push(`--pipeline must be one of: ${VALID_PIPELINES.join(', ')}`);
+  
+  // At least one pipeline must have at least one icon name
+  if (args.icons.length === 0 && args.duotones.length === 0 && args.illustrations.length === 0) {
+    errors.push(
+      'At least one --icon, --duotone, or --illustration is required'
+    );
   }
-  if (args.names.length === 0) {
-    errors.push('At least one --name is required');
-  }
+  
   if (!args.themePath) {
     errors.push('--theme-path is required');
   }
+  
+  if (args.redBull && !PRIMARY_REPO) {
+    errors.push(
+      '--red-bull requires PROJECT_ROOT to be set in .env ' +
+      '(points to the real theme_icons repo on disk)'
+    );
+  }
+  
   return errors;
 }
 
@@ -201,21 +220,19 @@ function nameExistsInNucleo(nucleoPath, candidateName) {
 
 // ─── Physical Audit ───────────────────────────────────────────────────────────
 /**
- * For each icon name, check whether it already exists in the relevant
- * project.nucleo files inside the cloned TEMP_ROOT.
+ * For each icon name in a pipeline, check whether it already exists in the
+ * relevant project.nucleo files inside the work root.
  *
  * Returns { alreadyDone: string[], toExport: string[] }
  */
-function auditIcons(names, pipeline, tempRoot) {
-  log.section('Phase 2 — Physical Audit');
-
+function auditPipeline(names, pipeline, workRoot) {
   const { required, matchAll } = SET_UUIDS[pipeline];
   const alreadyDone = [];
   const toExport    = [];
 
   for (const name of names) {
     const results = required.map(uuid => {
-      const nucleoPath = path.join(tempRoot, 'nc-projects', uuid, 'project.nucleo');
+      const nucleoPath = path.join(workRoot, 'nc-projects', uuid, 'project.nucleo');
       return nameExistsInNucleo(nucleoPath, name);
     });
 
@@ -294,6 +311,229 @@ function verifyMySetsFallback(tempRoot) {
   log.ok(`Copied _Assets/my-sets/ from primary repo`);
 }
 
+// ─── Red-bull: direct-repo helpers ───────────────────────────────────────────
+
+/**
+ * Throw if the working tree in `repoRoot` has uncommitted changes.
+ * `label` is used in the error message (e.g. 'theme_icons', 'luz_next').
+ */
+async function guardCleanTree(repoRoot, label) {
+  const git    = simpleGit(repoRoot);
+  const status = await git.status();
+  if (status.files.length > 0) {
+    const files = status.files.map(f => `  ${f.index}${f.working_dir} ${f.path}`).join('\n');
+    throw new Error(
+      `${label} has uncommitted changes. Stash or commit them before using --red-bull.\n${files}`
+    );
+  }
+}
+
+/**
+ * Fetch origin and reset to origin/master in `repoRoot`.
+ * Throws if the current branch is not 'master'.
+ */
+async function pullLatestMaster(repoRoot) {
+  const git    = simpleGit(repoRoot);
+  const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  if (branch !== 'master') {
+    throw new Error(
+      `${repoRoot} is on branch '${branch}', not 'master'. ` +
+      'Please checkout master before using --red-bull.'
+    );
+  }
+  log.info(`Fetching origin/master for ${path.basename(repoRoot)}…`);
+  await git.fetch('origin');
+  await git.reset(['--hard', 'origin/master']);
+  log.ok(`Reset to origin/master`);
+}
+
+// ─── luz_next helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Find the git root for any path (walks up via git rev-parse).
+ * Returns null if the path is not inside a git repo.
+ */
+async function findGitRoot(dirPath) {
+  try {
+    return (await simpleGit(dirPath).revparse(['--show-toplevel'])).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Return the 'origin' remote URL for a local repo root, or null on failure. */
+async function getRemoteUrl(repoRoot) {
+  try {
+    return (await simpleGit(repoRoot).remote(['get-url', 'origin'])).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert a git remote URL into a "create PR" link for Bitbucket or GitHub.
+ * Returns null if the URL format is not recognised.
+ */
+function buildPrUrlFromRemote(remoteUrl, branchName) {
+  if (!remoteUrl) return null;
+  const enc = encodeURIComponent(branchName);
+
+  const bb = remoteUrl.match(/bitbucket\.org[:/]([^/]+)\/(.+?)(?:\.git)?$/);
+  if (bb) {
+    return `https://bitbucket.org/${bb[1]}/${bb[2]}/pull-requests/new?source=${enc}&t=1`;
+  }
+  const gh = remoteUrl.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/);
+  if (gh) {
+    return `https://github.com/${gh[1]}/${gh[2]}/compare/${enc}`;
+  }
+  return null;
+}
+
+/**
+ * Clone luz_next at latest master into a sibling directory.
+ * Returns the path to the sibling clone root.
+ */
+async function cloneSiblingLuzNext(luzNextRoot, branchId) {
+  log.section('Phase 1b — Clone sibling luz_next');
+
+  const remoteUrl = await getRemoteUrl(luzNextRoot);
+  if (!remoteUrl) {
+    throw new Error(`Could not determine remote URL for ${luzNextRoot}`);
+  }
+
+  const siblingRoot = path.join(path.dirname(luzNextRoot), `temp_luz_next_${branchId}`);
+  log.info(`Cloning ${remoteUrl} → ${siblingRoot}`);
+
+  if (fs.existsSync(siblingRoot)) {
+    fs.rmSync(siblingRoot, { recursive: true, force: true });
+  }
+  await simpleGit().clone(remoteUrl, siblingRoot, ['--quiet']);
+  log.ok(`Sibling clone ready: ${siblingRoot}`);
+  return siblingRoot;
+}
+
+/**
+ * Mirror exported klara-theme files (fonts + SCSS map) from srcThemePath into
+ * dstThemePath.
+ */
+function mirrorThemeFiles(srcThemePath, dstThemePath) {
+  log.info(`Mirroring theme files → ${path.basename(dstThemePath)}`);
+
+  const srcFonts = path.join(srcThemePath, 'public', 'assets', 'fonts');
+  const dstFonts = path.join(dstThemePath, 'public', 'assets', 'fonts');
+  if (fs.existsSync(srcFonts)) {
+    fs.mkdirSync(dstFonts, { recursive: true });
+    fs.cpSync(srcFonts, dstFonts, { recursive: true });
+    log.ok('  fonts/ mirrored');
+  } else {
+    log.warn(`  fonts source not found: ${srcFonts}`);
+  }
+
+  const scssRelPaths = [
+    path.join('src', 'lib', 'styles', 'core', 'icons', '_icons-map.scss'),
+    path.join('src', 'styles', 'core', 'icons', '_icons-map.scss'),
+  ];
+  for (const rel of scssRelPaths) {
+    const src = path.join(srcThemePath, rel);
+    const dst = path.join(dstThemePath, rel);
+    if (fs.existsSync(src)) {
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.copyFileSync(src, dst);
+      log.ok('  _icons-map.scss mirrored');
+      break;
+    }
+  }
+}
+
+// ─── Shared git commit+push ───────────────────────────────────────────────────
+
+/**
+ * Shared core: resolve git author, checkout fresh branch, commit all staged
+ * changes, push, and return { branchName, prUrl }.
+ * Returns null if there is nothing to commit after `git add .`.
+ *
+ * @param {string}   repoRoot
+ * @param {string}   branchId
+ * @param {string[]} names        – icon names for commit message
+ * @param {string}   pipeline     – 'icon' | 'duotone' | 'illustration'
+ * @param {string|null} gitName
+ * @param {string|null} gitEmail
+ */
+async function gitCommitAndPush(repoRoot, branchId, names, pipeline, gitName, gitEmail) {
+  const git = simpleGit(repoRoot);
+
+  // Author identity: flag → repo local → global → primary repo → error
+  let name  = gitName;
+  let email = gitEmail;
+
+  if (!name || !email) {
+    try {
+      const cfg = await git.listConfig();
+      const get = key => cfg.all[key] || cfg.all[`local.${key}`] || cfg.all[`global.${key}`] || null;
+      name  = name  || get('user.name');
+      email = email || get('user.email');
+    } catch { /* ignore */ }
+  }
+
+  if (!name || !email) {
+    try {
+      name  = name  || (await simpleGit().raw(['config', '--global', 'user.name'])).trim();
+      email = email || (await simpleGit().raw(['config', '--global', 'user.email'])).trim();
+    } catch { /* ignore */ }
+  }
+
+  if (!name || !email) {
+    try {
+      const pgit = simpleGit(PRIMARY_REPO || repoRoot);
+      name  = name  || (await pgit.raw(['config', 'user.name'])).trim();
+      email = email || (await pgit.raw(['config', 'user.email'])).trim();
+    } catch { /* ignore */ }
+  }
+
+  if (!name || !email) {
+    throw new Error(
+      'Git author identity not found. Pass --git-name and --git-email flags, ' +
+      'or set global git config (git config --global user.name / user.email).'
+    );
+  }
+
+  log.info(`Git author: ${name} <${email}>`);
+  await git.addConfig('user.name',  name,  false, 'local');
+  await git.addConfig('user.email', email, false, 'local');
+
+  const branchName = `feature/export-icons-${branchId}`;
+  await git.checkoutLocalBranch(branchName);
+  log.ok(`On branch: ${branchName}`);
+
+  await git.add('.');
+  const status = await git.status();
+  if (status.files.length === 0) {
+    log.warn('Nothing to commit — skipping push');
+    return null;
+  }
+
+  const count = names.length;
+  const pipelineLabel = pipeline === 'icon'         ? 'icons'
+    : pipeline === 'duotone'      ? 'duotones'
+    : 'illustrations';
+
+  await git.commit([
+    `feat(${pipelineLabel}): export ${count} ${pipelineLabel.slice(0, -1)}${count > 1 ? 's' : ''}`,
+    `${names.join(', ')}`,
+    'Automated batch export.',
+  ]);
+
+  const lastLog = await git.log({ maxCount: 1 });
+  log.ok(`Commit: ${lastLog.latest.hash.slice(0, 8)} — ${lastLog.latest.message.split('\n')[0]}`);
+
+  await git.push('origin', branchName, ['--set-upstream']);
+  log.ok(`Pushed ${branchName} to origin`);
+
+  const remoteUrl = await getRemoteUrl(repoRoot);
+  const prUrl     = buildPrUrlFromRemote(remoteUrl, branchName);
+  return { branchName, prUrl };
+}
+
 // ─── Export pipeline ──────────────────────────────────────────────────────────
 /**
  * Resolves the entry point to spawn. In bundle mode we call the sibling
@@ -366,85 +606,53 @@ function readIconsMapScss(themePath) {
 
 // ─── Git operations ───────────────────────────────────────────────────────────
 
+/** Thin wrapper for the theme_icons temp-clone path. */
 async function gitSync(tempRoot, branchId, names, pipeline, gitName, gitEmail) {
-  log.section('Phase 4 — Git Sync');
+  log.section('Phase 4 — Git Sync (theme_icons)');
+  return gitCommitAndPush(tempRoot, branchId, names, pipeline, gitName, gitEmail);
+}
 
-  const git = simpleGit(tempRoot);
+/**
+ * luz_next sibling-clone path: clone → mirror → commit+push.
+ * Returns { branchName, prUrl } or null if nothing changed.
+ */
+async function gitSyncLuzNext(luzNextRoot, branchId, themePath, names, pipeline, gitName, gitEmail) {
+  log.section('Phase 4b — Git Sync (luz_next sibling)');
 
-  // Author identity: flag → local config → global config → error
-  let name  = gitName;
-  let email = gitEmail;
+  const siblingRoot = await cloneSiblingLuzNext(luzNextRoot, branchId);
 
-  if (!name || !email) {
-    try {
-      const cfg = await git.listConfig();
-      const get = key =>
-        cfg.all[key] || cfg.all[`local.${key}`] || cfg.all[`global.${key}`] || null;
-      name  = name  || get('user.name');
-      email = email || get('user.email');
-    } catch { /* ignore */ }
+  const relThemePath    = path.relative(luzNextRoot, themePath);
+  const siblingThemePath = path.join(siblingRoot, relThemePath);
+  mirrorThemeFiles(themePath, siblingThemePath);
+
+  const result = await gitCommitAndPush(siblingRoot, branchId, names, pipeline, gitName, gitEmail);
+  return { siblingRoot, result };
+}
+
+
+
+// ─── Build export task list ───────────────────────────────────────────────────
+
+/**
+ * Convert parsed args (with icons/duotones/illustrations arrays) into a list
+ * of export tasks. Each task represents one pipeline + its icon names.
+ *
+ * Filters out empty pipelines.
+ *
+ * @returns {Array<{pipeline: string, names: string[]}>}
+ */
+function buildExportTasks(args) {
+  const tasks = [];
+  if (args.icons.length > 0) {
+    tasks.push({ pipeline: 'icon', names: args.icons });
   }
-
-  if (!name || !email) {
-    // Fall back to git config --global (via system call)
-    try {
-      name  = name  || (await simpleGit().raw(['config', '--global', 'user.name'])).trim();
-      email = email || (await simpleGit().raw(['config', '--global', 'user.email'])).trim();
-    } catch { /* ignore */ }
+  if (args.duotones.length > 0) {
+    tasks.push({ pipeline: 'duotone', names: args.duotones });
   }
-
-  if (!name || !email) {
-    // Last resort: read from PRIMARY_REPO local config
-    try {
-      const primaryGit = simpleGit(PRIMARY_REPO);
-      name  = name  || (await primaryGit.raw(['config', 'user.name'])).trim();
-      email = email || (await primaryGit.raw(['config', 'user.email'])).trim();
-    } catch { /* ignore */ }
+  if (args.illustrations.length > 0) {
+    tasks.push({ pipeline: 'illustration', names: args.illustrations });
   }
-
-  if (!name || !email) {
-    throw new Error(
-      'Git author identity not found. Pass --git-name and --git-email flags, ' +
-      'or set global git config (git config --global user.name / user.email).'
-    );
-  }
-
-  log.info(`Git author: ${name} <${email}>`);
-
-  // Apply local config to the temp clone
-  await git.addConfig('user.name', name, false, 'local');
-  await git.addConfig('user.email', email, false, 'local');
-
-  // Branch
-  const branchName = `feature/export-icons-${branchId}`;
-  await git.checkoutLocalBranch(branchName);
-  const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-  log.ok(`On branch: ${currentBranch.trim()}`);
-
-  // Commit
-  const count      = names.length;
-  const namesList  = names.join(', ');
-  const pipelineLabel = pipeline === 'icon' ? 'Streamline Icon Fonts'
-    : pipeline === 'duotone' ? 'Streamline Duotone'
-    : 'Streamline Illustrations';
-
-  await git.add('.');
-  await git.commit([
-    `feat(icons): export ${count} icon${count > 1 ? 's' : ''}`,
-    `Icons: ${namesList}`,
-    `Set: ${pipelineLabel}`,
-    'Automated batch export.',
-  ]);
-
-  const lastLog = await git.log({ maxCount: 1 });
-  log.ok(`Commit: ${lastLog.latest.hash.slice(0, 8)} — ${lastLog.latest.message.split('\n')[0]}`);
-
-  // Push
-  await git.push('origin', branchName, ['--set-upstream']);
-  log.ok(`Pushed ${branchName} to origin`);
-
-  const prUrl = `${PR_BASE_URL}?source=${encodeURIComponent(branchName)}&t=1`;
-  return { branchName, prUrl };
+  return tasks;
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
@@ -466,56 +674,93 @@ async function main() {
 
   if (errors.length) {
     for (const e of errors) log.error(e);
-    log.error('\nUsage: node workflow.js --pipeline <icon|duotone|illustration> --name "Name" --theme-path /path');
+    log.error('\nUsage: node workflow.js --icon "Name" --duotone "Name" --illustration "Name" --theme-path /path');
     process.exit(1);
   }
 
   // Result scaffold — mutated as we progress
   const result = {
-    status:     'failed',
-    prUrl:      null,
-    branchName: null,
-    icons:      { exported: [], alreadyDone: [], failed: [] },
-    diff:       null,
-    error:      null,
+    status:            'failed',
+    prUrl:             null,
+    branchName:        null,
+    luzNextPrUrl:      null,
+    luzNextBranchName: null,
+    pipelines: {
+      icon:         { exported: [], alreadyDone: [], failed: [] },
+      duotone:      { exported: [], alreadyDone: [], failed: [] },
+      illustration: { exported: [], alreadyDone: [], failed: [] },
+    },
+    diff:              null,
+    error:             null,
   };
 
-  const tempRoot = path.join(os.tmpdir(), `theme_icons_${args.branchId}`);
+  // In red-bull mode we operate on the real repos in-place (no temp dirs).
+  // In normal mode we clone theme_icons to a temp dir.
+  const tempRoot  = path.join(os.tmpdir(), `theme_icons_${args.branchId}`);
+  const workRoot  = args.redBull ? PRIMARY_REPO : tempRoot;
+  let siblingLuzNext = null;   // sibling clone path (normal mode only), for cleanup
   let scssBeforeInfo = null;
 
+  // Resolve the luz_next repo root from --theme-path for Phase 4b.
+  const luzNextRoot = await findGitRoot(args.themePath);
+  if (!luzNextRoot) {
+    log.warn(`--theme-path (${args.themePath}) is not inside a git repo — luz_next PR will be skipped`);
+  } else {
+    log.info(`luz_next root: ${luzNextRoot}`);
+  }
+
+  // Build list of export tasks (filters out empty pipelines)
+  const exportTasks = buildExportTasks(args);
+  const allExportedNames = [];  // accumulate all exported names across all pipelines
+
   try {
-    // ── Phase 1: Clone ────────────────────────────────────────────────────
-    await cloneRepo(tempRoot);
-    verifyMySetsFallback(tempRoot);
+    // ── Phase 1 ───────────────────────────────────────────────────────────
+    if (args.redBull) {
+      log.section(`Phase 1 — Pull Latest (--red-bull | ${path.basename(workRoot)})`);
+      await guardCleanTree(workRoot, 'theme_icons');
+      await pullLatestMaster(workRoot);
+      verifyMySetsFallback(workRoot);
 
-    // ── Phase 2: Physical Audit ───────────────────────────────────────────
-    const { alreadyDone, toExport } = auditIcons(args.names, args.pipeline, tempRoot);
-    result.icons.alreadyDone = alreadyDone;
-
-    if (toExport.length === 0) {
-      log.ok('All icons already exported — nothing to do.');
-      result.status = 'success';
-      result.icons.exported = [];
-      // Still print result, no git needed
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      if (!args.skipCleanup) cleanup(tempRoot);
-      return;
+      // Also pull luz_next BEFORE the export writes files into it, so the
+      // reset --hard doesn't wipe our changes.
+      if (!args.skipGit && luzNextRoot) {
+        log.section(`Phase 1b — Pull Latest (--red-bull | ${path.basename(luzNextRoot)})`);
+        await guardCleanTree(luzNextRoot, 'luz_next');
+        await pullLatestMaster(luzNextRoot);
+      }
+    } else {
+      await cloneRepo(tempRoot);
+      verifyMySetsFallback(tempRoot);
     }
 
     // ── Pre-export: snapshot SCSS map for diff ────────────────────────────
     scssBeforeInfo = readIconsMapScss(args.themePath);
 
-    // ── Phase 3: Export ───────────────────────────────────────────────────
-    try {
-      await runExport(args.pipeline, toExport, args.themePath, tempRoot);
-      result.icons.exported = toExport;
-    } catch (err) {
-      log.error(`Export failed: ${err.message}`);
-      result.icons.failed = toExport;
-      result.error = err.message;
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      if (!args.skipCleanup) cleanup(tempRoot);
-      process.exit(1);
+    // ── Loop: Audit + Export for each pipeline ────────────────────────────
+    for (const task of exportTasks) {
+      log.section(`Pipeline: ${task.pipeline}`);
+
+      // Phase 2: Physical Audit
+      log.section(`Phase 2 — Physical Audit (${task.pipeline})`);
+      const { alreadyDone, toExport } = auditPipeline(task.names, task.pipeline, workRoot);
+      result.pipelines[task.pipeline].alreadyDone = alreadyDone;
+
+      if (toExport.length === 0) {
+        log.ok(`All ${task.pipeline} icons already exported — skip`);
+        continue;
+      }
+
+      // Phase 3: Export
+      try {
+        await runExport(task.pipeline, toExport, args.themePath, workRoot);
+        result.pipelines[task.pipeline].exported = toExport;
+        allExportedNames.push(...toExport);
+      } catch (err) {
+        log.error(`Export failed: ${err.message}`);
+        result.pipelines[task.pipeline].failed = toExport;
+        if (!result.error) result.error = err.message;
+        // Continue to next pipeline — don't abort everything
+      }
     }
 
     // ── Post-export: compute SCSS diff ────────────────────────────────────
@@ -533,30 +778,91 @@ async function main() {
       }
     }
 
-    // ── Phase 4: Git ──────────────────────────────────────────────────────
+    // Check if we have anything to commit
+    if (allExportedNames.length === 0) {
+      log.ok('All icons already exported — nothing to do.');
+      result.status = 'success';
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      if (!args.skipCleanup && !args.redBull) cleanup(tempRoot);
+      return;
+    }
+
+    // ── Phase 4: Git (theme_icons) ────────────────────────────────────────
     if (!args.skipGit) {
-      const { branchName, prUrl } = await gitSync(
-        tempRoot,
+      log.section('Phase 4 — Git Sync (theme_icons)');
+      
+      // For commit message, we need to summarize all exported items
+      // We'll use allExportedNames which is the concatenation of all pipelines
+      const syncResult = await gitCommitAndPush(
+        workRoot,
         args.branchId,
-        toExport,
-        args.pipeline,
+        allExportedNames,
+        'icon',  // Use 'icon' as the category for commit message purposes
         args.gitName,
         args.gitEmail,
       );
-      result.branchName = branchName;
-      result.prUrl      = prUrl;
+      if (syncResult) {
+        result.branchName = syncResult.branchName;
+        result.prUrl      = syncResult.prUrl;
+      }
     }
 
-    result.status = result.icons.failed.length > 0 ? 'partial' : 'success';
+    // ── Phase 4b: Git (luz_next) ──────────────────────────────────────────
+    if (!args.skipGit && luzNextRoot) {
+      if (args.redBull) {
+        // The real luz_next was already pulled in Phase 1b (before the export
+        // ran), so our changes are already on disk. Just commit+push.
+        log.section(`Phase 4b — Commit (--red-bull | ${path.basename(luzNextRoot)})`);
+        const lnResult = await gitCommitAndPush(
+          luzNextRoot,
+          args.branchId,
+          allExportedNames,
+          'icon',  // Use 'icon' for commit message purposes
+          args.gitName,
+          args.gitEmail,
+        );
+        if (lnResult) {
+          result.luzNextBranchName = lnResult.branchName;
+          result.luzNextPrUrl      = lnResult.prUrl;
+        }
+      } else {
+        // Clone a sibling temp repo, mirror files, commit+push there.
+        log.section('Phase 4b — Git Sync (luz_next sibling)');
+        const siblingRoot = await cloneSiblingLuzNext(luzNextRoot, args.branchId);
+
+        const relThemePath    = path.relative(luzNextRoot, args.themePath);
+        const siblingThemePath = path.join(siblingRoot, relThemePath);
+        mirrorThemeFiles(args.themePath, siblingThemePath);
+
+        const lnResult = await gitCommitAndPush(
+          siblingRoot,
+          args.branchId,
+          allExportedNames,
+          'icon',  // Use 'icon' for commit message purposes
+          args.gitName,
+          args.gitEmail,
+        );
+        siblingLuzNext = siblingRoot;
+        if (lnResult) {
+          result.luzNextBranchName = lnResult.branchName;
+          result.luzNextPrUrl      = lnResult.prUrl;
+        }
+      }
+    }
+
+    result.status = Object.values(result.pipelines).some(p => p.failed.length > 0) ? 'partial' : 'success';
 
   } catch (err) {
     log.error(`Fatal: ${err.message}`);
-    result.error = err.message;
+    result.error  = err.message;
     result.status = 'failed';
   } finally {
     // Always emit JSON to stdout — agent parses this
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-    if (!args.skipCleanup) cleanup(tempRoot);
+    if (!args.skipCleanup && !args.redBull) {
+      cleanup(tempRoot);
+      if (siblingLuzNext) cleanup(siblingLuzNext);
+    }
   }
 }
 
@@ -564,3 +870,4 @@ main().catch(err => {
   process.stderr.write(`\x1b[31m[workflow] Unhandled error: ${err.message}\x1b[0m\n`);
   process.exit(1);
 });
+
