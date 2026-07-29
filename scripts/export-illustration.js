@@ -35,121 +35,38 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { search, confirm, input } = require('@inquirer/prompts');
 const {
-  c, generateUuid, findSvgs,
-  readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
-  validateJson, parseArgs, stripLeadingSlash, spawnExport,
+  c, expandHome, readProjectNucleo, parseArgs, spawnExport,
 } = require('./lib/common');
+const {
+  resolveIllustrationPaths, searchIllustrationPipeline, registerIllustrationPipeline, deployIllustrationPipeline,
+} = require('./lib/pipelines');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const PROJECT_ROOT = process.env.PROJECT_ROOT;
+const PROJECT_ROOT = expandHome(process.env.PROJECT_ROOT);
 if (!PROJECT_ROOT) {
   console.error(c.red('ERROR: PROJECT_ROOT not set. Check your .env file.'));
   process.exit(1);
 }
-
-const ASSETS_MY_SETS  = process.env.ASSETS_MY_SETS
-  || path.join(PROJECT_ROOT, '_Assets', 'my-sets');
-const UX_ILLUST_ROOT  = path.join(ASSETS_MY_SETS, 'Streamline UX Illustrations');
-
-// Two source dirs searched in order, results combined
-const SOURCE_DIRS = [
-  process.env.SOURCE_DIR_ILLUSTRATIONS_FILLED
-    || path.join(UX_ILLUST_ROOT, 'Steamline Filled (Fixed with oslllo-svg-fixer)'),
-  process.env.SOURCE_DIR_ILLUSTRATIONS_LINE
-    || path.join(UX_ILLUST_ROOT, 'UX Line'),
-];
-
-const NC_PROJECT_UUID = process.env.NUCLEO_UUID_ILLUSTRATIONS_PART3 || 'b8eee6355fe83a71ddffaa';
-const NC_PROJECT_DIR  = path.join(PROJECT_ROOT, 'nc-projects', NC_PROJECT_UUID);
-const NUCLEO_PATH     = path.join(NC_PROJECT_DIR, 'project.nucleo');
-
-const OUTPUT_SUBDIR   = stripLeadingSlash(process.env.OUTPUT_SUBDIR_ILLUSTRATIONS || '_Assets/StreamlineIllustrator');
-const EXPORT_DIR      = path.join(PROJECT_ROOT, OUTPUT_SUBDIR, 'img');
-
-// Path to the sprite-generation script (project root)
-const NUCLEO_SPRITE_SCRIPT = path.join(__dirname, '..', 'nucleo-sprite.js');
-
-const SPRITE_CONFIG = {
-  svgsprite: {
-    baseClass:      'streamline-icons',
-    idPrefix:       'streamline-icons-',
-    assetsPath:     'img',
-    fileName:       'streamline-icons.svg',
-    metadataEnable: true,
-    metadata: {
-      author: 'Klara Design', description: 'Built on Streamline', version: '0.1',
-      copyright: 'Klara Design', license: '', url: '',
-    },
-  },
-};
-
-// ─── Source labels for display ─────────────────────────────────────────────────────
-
-const SOURCE_LABELS = [
-  'Steamline Filled',
-  'UX Line',
-];
-
-// ─── Search helper ───────────────────────────────────────────────────────────
-
-/**
- * Search both source dirs. Returns array of { file, sourceLabel } sorted by basename.
- * Duplicates (same name in both sources) are kept as separate entries so the user
- * can pick the preferred variant.
- */
-function searchIllustrations(term) {
-  if (!term || !term.trim()) return [];
-  const results = [];
-  for (let i = 0; i < SOURCE_DIRS.length; i++) {
-    if (!fs.existsSync(SOURCE_DIRS[i])) continue;
-    for (const f of findSvgs(SOURCE_DIRS[i], term.trim())) {
-      results.push({ file: f, sourceLabel: SOURCE_LABELS[i] });
-    }
-  }
-  return results.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
+if (!fs.existsSync(PROJECT_ROOT)) {
+  console.error(c.red(`ERROR: PROJECT_ROOT does not exist: ${PROJECT_ROOT}`));
+  process.exit(1);
 }
 
-// ─── Register one illustration ────────────────────────────────────────────────
+const paths = resolveIllustrationPaths(PROJECT_ROOT);
+const { NC_PROJECT_DIR, NUCLEO_PATH, EXPORT_DIR, SPRITE_CONFIG, NUCLEO_SPRITE_SCRIPT } = paths;
+
+// ─── Search / register wrappers (shared logic lives in lib/pipelines.js) ──────
+
+function searchIllustrations(term) {
+  return searchIllustrationPipeline(paths, term);
+}
 
 function registerIllustration(selectedFile, existingNames) {
-  const svgBaseName = selectedFile.basename;
-
-  if (existingNames.has(svgBaseName)) {
-    console.log(c.yellow(`  [SKIP] '${svgBaseName}' already exists (uuid: ${existingNames.get(svgBaseName)})`))
-    return null;
-  }
-
-  const { rawJson, obj } = readProjectNucleo(NUCLEO_PATH);
-  const initialCount     = (obj.icons || []).length;
-  const currentMax       = (obj.icons || []).reduce((m, i) => Math.max(m, i.place), 0);
-  const nextPlace        = currentMax + 1;
-
-  const newUuid  = generateUuid();
-  const destPath = path.join(NC_PROJECT_DIR, newUuid + '.svg');
-  fs.copyFileSync(selectedFile.fullPath, destPath);
-  console.log(c.green(`  [COPY] ${svgBaseName}.svg -> ${newUuid}.svg`));
-
-  const iconJson = buildIconJson({
-    uuid:    newUuid,
-    name:    svgBaseName,
-    width:   100,
-    height:  100,
-    klass:   'outline',
-    grid:    128,
-    place:   nextPlace,
-    fillAll: 1,
+  return registerIllustrationPipeline(paths, selectedFile, existingNames, msg => {
+    const color = msg.startsWith('[SKIP]') ? c.yellow : c.green;
+    console.log(color(`  ${msg}`));
   });
-
-  const updatedRaw = spliceIconsIntoRawJson(rawJson, [iconJson], initialCount);
-  const validated  = validateJson(updatedRaw, 'project.nucleo');
-  console.log(c.green(`  [VALID] ${validated.icons.length} icons total (was ${initialCount})`));
-
-  fs.copyFileSync(NUCLEO_PATH, NUCLEO_PATH + '.bak');
-  fs.writeFileSync(NUCLEO_PATH, updatedRaw, 'utf8');
-  existingNames.set(svgBaseName, newUuid);
-  console.log(c.green(`  [ADD]  '${svgBaseName}' (uuid: ${newUuid}, place: ${nextPlace})`));
-  return svgBaseName;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -256,8 +173,7 @@ async function main() {
   console.log(c.cyan('\n=== Phase 2: Export Sprite ==='));
   console.log(c.yellow('Generating SVG sprite...'));
 
-  const outputDir = path.join(PROJECT_ROOT, OUTPUT_SUBDIR);
-  await spawnExport(NUCLEO_SPRITE_SCRIPT, NC_PROJECT_DIR, outputDir, SPRITE_CONFIG);
+  await spawnExport(NUCLEO_SPRITE_SCRIPT, NC_PROJECT_DIR, paths.OUTPUT_DIR, SPRITE_CONFIG);
   console.log(c.green('Sprite export complete.'));
 
   // Verify exported SVG(s) exist
@@ -315,17 +231,16 @@ async function main() {
     console.log(c.yellow(`Auto-copying to klara-theme (--auto-copy): ${themePath}`));
   }
 
-  const iconsTargetDir = path.join(themePath, 'src', 'lib', 'assets', 'icons');
-  if (!fs.existsSync(iconsTargetDir)) {
-    console.error(c.red(`ERROR: Target dir not found: ${iconsTargetDir}`));
+  let deployResult;
+  try {
+    deployResult = deployIllustrationPipeline(paths, themePath);
+  } catch (err) {
+    console.error(c.red(`ERROR: ${err.message}`));
     process.exit(1);
   }
 
-  console.log(c.yellow(`Copying to: ${iconsTargetDir}`));
-  for (const fname of exportedFiles) {
-    const src  = path.join(EXPORT_DIR, fname);
-    const dest = path.join(iconsTargetDir, fname);
-    fs.copyFileSync(src, dest);
+  console.log(c.yellow(`Copying to: ${path.join(themePath, 'src', 'lib', 'assets', 'icons')}`));
+  for (const fname of deployResult.copiedFiles) {
     console.log(c.green(`  [COPY] ${fname}`));
   }
 

@@ -71,6 +71,7 @@ require('dotenv').config({ path: path.join(projectRoot, '.env') });
 const simpleGit = require('simple-git');
 const fg        = require('fast-glob');
 const { createTwoFilesPatch } = require('diff');
+const { getRemoteUrl, buildPrUrlFromRemote, gitCommitAndPush: sharedGitCommitAndPush } = require('./lib/git-deploy');
 
 // ─── ANSI helpers (stderr only, never bleed into JSON stdout) ────────────────
 const log = {
@@ -83,8 +84,23 @@ const log = {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const GIT_REPO_URL = 'git@bitbucket-nhut:axonivy-prod/theme_icons.git';
-const PR_BASE_URL  = 'https://bitbucket.org/axonivy-prod/theme_icons/pull-requests/new';
+// Some machines don't have the `bitbucket-nhut` SSH host alias configured
+// (see ~/.ssh/config) and instead use the plain `bitbucket.org` host with a
+// default/named identity key. Set USE_DIRECT_GIT_HOST=true in .env to switch
+// to that direct-host form; leave unset/false to keep the original alias
+// (normal machine config, matches SKILL.md).
+const USE_DIRECT_GIT_HOST = process.env.USE_DIRECT_GIT_HOST === 'true';
+
+const GIT_REPO_URL      = USE_DIRECT_GIT_HOST
+  ? 'git@bitbucket.org:axonivy-prod/theme_icons.git'
+  : 'git@bitbucket-nhut:axonivy-prod/theme_icons.git';
+const PR_BASE_URL       = 'https://bitbucket.org/axonivy-prod/theme_icons/pull-requests/new';
+// Remote for luz_next (target design-system repo) — cloned fresh each automated run.
+const LUZ_NEXT_REPO_URL = USE_DIRECT_GIT_HOST
+  ? 'git@bitbucket.org:axonivy-prod/luz_next.git'
+  : 'git@bitbucket-nhut:axonivy-prod/luz_next.git';
+// Relative path from luz_next root to the klara-theme package inside it.
+const THEME_SUBPATH     = path.join('libs', 'klara-theme');
 
 // nc-projects folder UUIDs (Nucleo 22-char hex format) per pipeline type.
 // These must exist as subdirectories in ${TEMP_ROOT}/nc-projects/.
@@ -119,6 +135,23 @@ const SET_UUIDS = {
 const VALID_PIPELINES = ['icon', 'duotone', 'illustration'];
 const MAX_CLONE_RETRIES = 5;
 
+// ─── NDJSON event emitter (--json-events mode) ────────────────────────────────
+// `_jsonEvents` is set to true in parseArgs when --json-events flag is present.
+// emit() writes to stdout; all log.* still go to stderr so they don't interfere.
+let _jsonEvents = false;
+
+function emit(obj) {
+  if (_jsonEvents) process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function emitStage(id, status, label, detail) {
+  emit({ type: 'stage', id, status, label, ...(detail !== undefined ? { detail } : {}) });
+}
+
+function emitLog(stage, line) {
+  emit({ type: 'log', stage, line });
+}
+
 const PRIMARY_REPO = process.env.PROJECT_ROOT || '';   // fallback source for _Assets/my-sets/
 const MY_SETS_SUBPATH = '_Assets/my-sets';
 
@@ -137,6 +170,9 @@ function parseArgs() {
     gitName:    null,
     gitEmail:   null,
     redBull:    false,
+    jsonEvents: false,
+    workRoot:   null,
+    luzNextRoot: null,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -153,6 +189,12 @@ function parseArgs() {
       case '--git-name':   result.gitName   = next; i++; break;
       case '--git-email':  result.gitEmail  = next; i++; break;
       case '--red-bull':   result.redBull   = true; break;
+      case '--json-events': result.jsonEvents = true; break;
+      // Pre-cloned mode: repos are already on disk (e.g. cloned by the bridge
+      // server's /api/workflow/prepare session). workflow.js then skips its
+      // own clone step and operates directly on these paths.
+      case '--work-root':     result.workRoot    = next; i++; break;
+      case '--luz-next-root': result.luzNextRoot = next; i++; break;
       default:
         // ignore unknown flags
         break;
@@ -172,10 +214,20 @@ function validateArgs(args) {
     );
   }
   
-  if (!args.themePath) {
-    errors.push('--theme-path is required');
+  // --theme-path is required unless --json-events (auto-clones luz_next) or
+  // --luz-next-root (pre-cloned mode; themePath is derived from it) is set.
+  if (!args.themePath && !args.jsonEvents && !args.luzNextRoot) {
+    errors.push('--theme-path is required (or use --json-events / --luz-next-root for automated mode)');
   }
-  
+
+  if (args.workRoot && !fs.existsSync(args.workRoot)) {
+    errors.push(`--work-root path does not exist: ${args.workRoot}`);
+  }
+
+  if (args.luzNextRoot && !fs.existsSync(args.luzNextRoot)) {
+    errors.push(`--luz-next-root path does not exist: ${args.luzNextRoot}`);
+  }
+
   if (args.redBull && !PRIMARY_REPO) {
     errors.push(
       '--red-bull requires PROJECT_ROOT to be set in .env ' +
@@ -361,34 +413,6 @@ async function findGitRoot(dirPath) {
   }
 }
 
-/** Return the 'origin' remote URL for a local repo root, or null on failure. */
-async function getRemoteUrl(repoRoot) {
-  try {
-    return (await simpleGit(repoRoot).remote(['get-url', 'origin'])).trim();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Convert a git remote URL into a "create PR" link for Bitbucket or GitHub.
- * Returns null if the URL format is not recognised.
- */
-function buildPrUrlFromRemote(remoteUrl, branchName) {
-  if (!remoteUrl) return null;
-  const enc = encodeURIComponent(branchName);
-
-  const bb = remoteUrl.match(/bitbucket\.org[:/]([^/]+)\/(.+?)(?:\.git)?$/);
-  if (bb) {
-    return `https://bitbucket.org/${bb[1]}/${bb[2]}/pull-requests/new?source=${enc}&t=1`;
-  }
-  const gh = remoteUrl.match(/github\.com[:/]([^/]+)\/(.+?)(?:\.git)?$/);
-  if (gh) {
-    return `https://github.com/${gh[1]}/${gh[2]}/compare/${enc}`;
-  }
-  return null;
-}
-
 /**
  * Clone luz_next at latest master into a sibling directory.
  * Returns the path to the sibling clone root.
@@ -448,9 +472,9 @@ function mirrorThemeFiles(srcThemePath, dstThemePath) {
 // ─── Shared git commit+push ───────────────────────────────────────────────────
 
 /**
- * Shared core: resolve git author, checkout fresh branch, commit all staged
- * changes, push, and return { branchName, prUrl }.
- * Returns null if there is nothing to commit after `git add .`.
+ * Thin wrapper over lib/git-deploy.js's shared gitCommitAndPush: resolves git
+ * author, checks out a fresh branch, commits all staged changes, pushes, and
+ * returns { branchName, prUrl }. Returns null if there is nothing to commit.
  *
  * @param {string}   repoRoot
  * @param {string}   branchId
@@ -460,78 +484,11 @@ function mirrorThemeFiles(srcThemePath, dstThemePath) {
  * @param {string|null} gitEmail
  */
 async function gitCommitAndPush(repoRoot, branchId, names, pipeline, gitName, gitEmail) {
-  const git = simpleGit(repoRoot);
-
-  // Author identity: flag → repo local → global → primary repo → error
-  let name  = gitName;
-  let email = gitEmail;
-
-  if (!name || !email) {
-    try {
-      const cfg = await git.listConfig();
-      const get = key => cfg.all[key] || cfg.all[`local.${key}`] || cfg.all[`global.${key}`] || null;
-      name  = name  || get('user.name');
-      email = email || get('user.email');
-    } catch { /* ignore */ }
-  }
-
-  if (!name || !email) {
-    try {
-      name  = name  || (await simpleGit().raw(['config', '--global', 'user.name'])).trim();
-      email = email || (await simpleGit().raw(['config', '--global', 'user.email'])).trim();
-    } catch { /* ignore */ }
-  }
-
-  if (!name || !email) {
-    try {
-      const pgit = simpleGit(PRIMARY_REPO || repoRoot);
-      name  = name  || (await pgit.raw(['config', 'user.name'])).trim();
-      email = email || (await pgit.raw(['config', 'user.email'])).trim();
-    } catch { /* ignore */ }
-  }
-
-  if (!name || !email) {
-    throw new Error(
-      'Git author identity not found. Pass --git-name and --git-email flags, ' +
-      'or set global git config (git config --global user.name / user.email).'
-    );
-  }
-
-  log.info(`Git author: ${name} <${email}>`);
-  await git.addConfig('user.name',  name,  false, 'local');
-  await git.addConfig('user.email', email, false, 'local');
-
-  const branchName = `feature/export-icons-${branchId}`;
-  await git.checkoutLocalBranch(branchName);
-  log.ok(`On branch: ${branchName}`);
-
-  await git.add('.');
-  const status = await git.status();
-  if (status.files.length === 0) {
-    log.warn('Nothing to commit — skipping push');
-    return null;
-  }
-
-  const count = names.length;
-  const pipelineLabel = pipeline === 'icon'         ? 'icons'
-    : pipeline === 'duotone'      ? 'duotones'
-    : 'illustrations';
-
-  await git.commit([
-    `feat(${pipelineLabel}): export ${count} ${pipelineLabel.slice(0, -1)}${count > 1 ? 's' : ''}`,
-    `${names.join(', ')}`,
-    'Automated batch export.',
-  ]);
-
-  const lastLog = await git.log({ maxCount: 1 });
-  log.ok(`Commit: ${lastLog.latest.hash.slice(0, 8)} — ${lastLog.latest.message.split('\n')[0]}`);
-
-  await git.push('origin', branchName, ['--set-upstream']);
-  log.ok(`Pushed ${branchName} to origin`);
-
-  const remoteUrl = await getRemoteUrl(repoRoot);
-  const prUrl     = buildPrUrlFromRemote(remoteUrl, branchName);
-  return { branchName, prUrl };
+  return sharedGitCommitAndPush(
+    repoRoot, branchId, names, pipeline, gitName, gitEmail,
+    PRIMARY_REPO || repoRoot,
+    msg => log.info(msg),
+  );
 }
 
 // ─── Export pipeline ──────────────────────────────────────────────────────────
@@ -575,10 +532,21 @@ async function runExport(pipeline, names, themePath, tempRoot) {
   log.info(`Spawning: node ${path.basename(script)} ${args.join(' ')}`);
 
   return new Promise((resolve, reject) => {
+    // In --json-events mode capture stdout+stderr so we can relay them as
+    // NDJSON log events rather than letting them bleed into the machine-readable
+    // stdout stream.
+    const stdioMode = _jsonEvents
+      ? ['inherit', 'pipe', 'pipe']
+      : ['inherit', 'inherit', 'inherit'];
     const child = spawn(process.execPath, [script, ...args], {
-      stdio: ['inherit', 'inherit', 'inherit'],
+      stdio: stdioMode,
       env: { ...process.env, PROJECT_ROOT: tempRoot },
     });
+    if (_jsonEvents) {
+      const stageId = `export-${pipeline}`;
+      if (child.stdout) child.stdout.on('data', chunk => emitLog(stageId, chunk.toString()));
+      if (child.stderr) child.stderr.on('data', chunk => emitLog(stageId, chunk.toString()));
+    }
     child.on('close', code => {
       if (code === 0) {
         log.ok('Export pipeline finished successfully');
@@ -670,6 +638,8 @@ function cleanup(tempRoot) {
 
 async function main() {
   const args   = parseArgs();
+  // Enable NDJSON events on stdout when --json-events is set.
+  _jsonEvents = args.jsonEvents;
   const errors = validateArgs(args);
 
   if (errors.length) {
@@ -695,18 +665,50 @@ async function main() {
   };
 
   // In red-bull mode we operate on the real repos in-place (no temp dirs).
-  // In normal mode we clone theme_icons to a temp dir.
+  // In pre-cloned mode (--work-root) the caller already cloned theme_icons —
+  // typically the bridge server's /api/workflow/prepare session — so we skip
+  // our own clone step entirely and operate on that path directly.
+  // Otherwise (normal mode) we clone theme_icons to a temp dir ourselves.
+  const preCloned = Boolean(args.workRoot);
   const tempRoot  = path.join(os.tmpdir(), `theme_icons_${args.branchId}`);
-  const workRoot  = args.redBull ? PRIMARY_REPO : tempRoot;
+  const workRoot  = args.redBull ? PRIMARY_REPO : (args.workRoot || tempRoot);
   let siblingLuzNext = null;   // sibling clone path (normal mode only), for cleanup
+  let luzNextTempRoot = null;  // set when --json-events auto-clones luz_next fresh
   let scssBeforeInfo = null;
 
-  // Resolve the luz_next repo root from --theme-path for Phase 4b.
-  const luzNextRoot = await findGitRoot(args.themePath);
-  if (!luzNextRoot) {
-    log.warn(`--theme-path (${args.themePath}) is not inside a git repo — luz_next PR will be skipped`);
+  // Resolve luz_next root + themePath, in priority order:
+  //   1. --luz-next-root (pre-cloned mode; themePath derived from it)
+  //   2. --json-events with no --theme-path (clone luz_next fresh ourselves)
+  //   3. --theme-path (find its git root for Phase 4b)
+  let luzNextRoot;
+  if (args.luzNextRoot) {
+    luzNextRoot = args.luzNextRoot;
+    if (!args.themePath) args.themePath = path.join(luzNextRoot, THEME_SUBPATH);
+    log.info(`luz_next root (pre-cloned): ${luzNextRoot}`);
+  } else if (args.jsonEvents && !args.themePath) {
+    luzNextTempRoot = path.join(os.tmpdir(), `luz_next_${args.branchId}`);
+    emitStage('clone-luz-next', 'start', 'Cloning luz_next');
+    try {
+      log.section('Phase 1b — Clone luz_next');
+      log.info(`Cloning ${LUZ_NEXT_REPO_URL} → ${luzNextTempRoot}`);
+      if (fs.existsSync(luzNextTempRoot)) fs.rmSync(luzNextTempRoot, { recursive: true, force: true });
+      await simpleGit().clone(LUZ_NEXT_REPO_URL, luzNextTempRoot, ['--quiet']);
+      args.themePath = path.join(luzNextTempRoot, THEME_SUBPATH);
+      luzNextRoot = luzNextTempRoot;
+      log.ok(`luz_next ready: ${luzNextTempRoot}`);
+      emitStage('clone-luz-next', 'ok', 'Cloning luz_next');
+    } catch (err) {
+      emitStage('clone-luz-next', 'error', 'Cloning luz_next', err.message);
+      throw err;
+    }
   } else {
-    log.info(`luz_next root: ${luzNextRoot}`);
+    // Resolve the luz_next repo root from --theme-path for Phase 4b.
+    luzNextRoot = await findGitRoot(args.themePath);
+    if (!luzNextRoot) {
+      log.warn(`--theme-path (${args.themePath}) is not inside a git repo — luz_next PR will be skipped`);
+    } else {
+      log.info(`luz_next root: ${luzNextRoot}`);
+    }
   }
 
   // Build list of export tasks (filters out empty pipelines)
@@ -715,7 +717,10 @@ async function main() {
 
   try {
     // ── Phase 1 ───────────────────────────────────────────────────────────
-    if (args.redBull) {
+    if (preCloned) {
+      log.section(`Phase 1 — Using pre-cloned workspace (${path.basename(workRoot)})`);
+      verifyMySetsFallback(workRoot);
+    } else if (args.redBull) {
       log.section(`Phase 1 — Pull Latest (--red-bull | ${path.basename(workRoot)})`);
       await guardCleanTree(workRoot, 'theme_icons');
       await pullLatestMaster(workRoot);
@@ -729,8 +734,15 @@ async function main() {
         await pullLatestMaster(luzNextRoot);
       }
     } else {
-      await cloneRepo(tempRoot);
-      verifyMySetsFallback(tempRoot);
+      emitStage('clone-theme-icons', 'start', 'Cloning theme_icons');
+      try {
+        await cloneRepo(tempRoot);
+        verifyMySetsFallback(tempRoot);
+        emitStage('clone-theme-icons', 'ok', 'Cloning theme_icons');
+      } catch (err) {
+        emitStage('clone-theme-icons', 'error', 'Cloning theme_icons', err.message);
+        throw err;
+      }
     }
 
     // ── Pre-export: snapshot SCSS map for diff ────────────────────────────
@@ -742,8 +754,11 @@ async function main() {
 
       // Phase 2: Physical Audit
       log.section(`Phase 2 — Physical Audit (${task.pipeline})`);
+      emitStage(`audit-${task.pipeline}`, 'start', `Auditing ${task.pipeline}`);
       const { alreadyDone, toExport } = auditPipeline(task.names, task.pipeline, workRoot);
       result.pipelines[task.pipeline].alreadyDone = alreadyDone;
+      emitStage(`audit-${task.pipeline}`, 'ok', `Auditing ${task.pipeline}`,
+        `${toExport.length} to export, ${alreadyDone.length} already done`);
 
       if (toExport.length === 0) {
         log.ok(`All ${task.pipeline} icons already exported — skip`);
@@ -751,14 +766,17 @@ async function main() {
       }
 
       // Phase 3: Export
+      emitStage(`export-${task.pipeline}`, 'start', `Exporting ${task.pipeline}`);
       try {
         await runExport(task.pipeline, toExport, args.themePath, workRoot);
         result.pipelines[task.pipeline].exported = toExport;
         allExportedNames.push(...toExport);
+        emitStage(`export-${task.pipeline}`, 'ok', `Exporting ${task.pipeline}`);
       } catch (err) {
         log.error(`Export failed: ${err.message}`);
         result.pipelines[task.pipeline].failed = toExport;
         if (!result.error) result.error = err.message;
+        emitStage(`export-${task.pipeline}`, 'error', `Exporting ${task.pipeline}`, err.message);
         // Continue to next pipeline — don't abort everything
       }
     }
@@ -782,15 +800,22 @@ async function main() {
     if (allExportedNames.length === 0) {
       log.ok('All icons already exported — nothing to do.');
       result.status = 'success';
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      if (!args.skipCleanup && !args.redBull) cleanup(tempRoot);
+      if (args.jsonEvents) {
+        emit({ type: 'result', result });
+      } else {
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      }
+      if (!args.skipCleanup && !args.redBull) {
+        cleanup(tempRoot);
+        if (luzNextTempRoot) cleanup(luzNextTempRoot);
+      }
       return;
     }
 
     // ── Phase 4: Git (theme_icons) ────────────────────────────────────────
     if (!args.skipGit) {
       log.section('Phase 4 — Git Sync (theme_icons)');
-      
+      emitStage('commit-theme-icons', 'start', 'Committing theme_icons');
       // For commit message, we need to summarize all exported items
       // We'll use allExportedNames which is the concatenation of all pipelines
       const syncResult = await gitCommitAndPush(
@@ -804,15 +829,40 @@ async function main() {
       if (syncResult) {
         result.branchName = syncResult.branchName;
         result.prUrl      = syncResult.prUrl;
+        emitStage('commit-theme-icons', 'ok', 'Committing theme_icons', syncResult.branchName);
+      } else {
+        emitStage('commit-theme-icons', 'ok', 'Committing theme_icons', 'Nothing to commit');
       }
     }
 
     // ── Phase 4b: Git (luz_next) ──────────────────────────────────────────
     if (!args.skipGit && luzNextRoot) {
-      if (args.redBull) {
+      if (luzNextTempRoot || args.luzNextRoot) {
+        // Direct-commit mode: luz_next was already cloned (either freshly by
+        // --json-events Phase 1b, or pre-cloned via --luz-next-root). The
+        // export pipeline deployed files directly there — just commit+push.
+        log.section('Phase 4b — Git Sync (luz_next direct)');
+        emitStage('commit-luz-next', 'start', 'Committing luz_next');
+        const lnResult = await gitCommitAndPush(
+          luzNextTempRoot || luzNextRoot,
+          args.branchId,
+          allExportedNames,
+          'icon',
+          args.gitName,
+          args.gitEmail,
+        );
+        if (lnResult) {
+          result.luzNextBranchName = lnResult.branchName;
+          result.luzNextPrUrl      = lnResult.prUrl;
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', lnResult.branchName);
+        } else {
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', 'Nothing to commit');
+        }
+      } else if (args.redBull) {
         // The real luz_next was already pulled in Phase 1b (before the export
         // ran), so our changes are already on disk. Just commit+push.
         log.section(`Phase 4b — Commit (--red-bull | ${path.basename(luzNextRoot)})`);
+        emitStage('commit-luz-next', 'start', 'Committing luz_next');
         const lnResult = await gitCommitAndPush(
           luzNextRoot,
           args.branchId,
@@ -824,10 +874,14 @@ async function main() {
         if (lnResult) {
           result.luzNextBranchName = lnResult.branchName;
           result.luzNextPrUrl      = lnResult.prUrl;
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', lnResult.branchName);
+        } else {
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', 'Nothing to commit');
         }
       } else {
         // Clone a sibling temp repo, mirror files, commit+push there.
         log.section('Phase 4b — Git Sync (luz_next sibling)');
+        emitStage('commit-luz-next', 'start', 'Committing luz_next');
         const siblingRoot = await cloneSiblingLuzNext(luzNextRoot, args.branchId);
 
         const relThemePath    = path.relative(luzNextRoot, args.themePath);
@@ -846,6 +900,9 @@ async function main() {
         if (lnResult) {
           result.luzNextBranchName = lnResult.branchName;
           result.luzNextPrUrl      = lnResult.prUrl;
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', lnResult.branchName);
+        } else {
+          emitStage('commit-luz-next', 'ok', 'Committing luz_next', 'Nothing to commit');
         }
       }
     }
@@ -876,11 +933,23 @@ async function main() {
     result.error  = err.message;
     result.status = 'failed';
   } finally {
-    // Always emit JSON to stdout — agent parses this
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-    if (!args.skipCleanup && !args.redBull) {
-      cleanup(tempRoot);
-      if (siblingLuzNext) cleanup(siblingLuzNext);
+    // Emit final result (NDJSON event or legacy plain JSON)
+    if (args.jsonEvents) {
+      emitStage('cleanup', 'start', 'Cleaning up');
+      if (!args.skipCleanup && !args.redBull) {
+        cleanup(tempRoot);
+        if (siblingLuzNext) cleanup(siblingLuzNext);
+        if (luzNextTempRoot) cleanup(luzNextTempRoot);
+      }
+      emitStage('cleanup', 'ok', 'Cleaning up');
+      emit({ type: 'result', result });
+    } else {
+      // Always emit JSON to stdout — agent parses this
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      if (!args.skipCleanup && !args.redBull) {
+        cleanup(tempRoot);
+        if (siblingLuzNext) cleanup(siblingLuzNext);
+      }
     }
   }
 }

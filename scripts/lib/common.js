@@ -5,7 +5,13 @@ const fs     = require('fs');
 const crypto = require('crypto');
 const { spawn }        = require('child_process');
 const { writeFileSync, mkdtempSync } = require('fs');
-const { tmpdir }       = require('os');
+const { tmpdir, homedir } = require('os');
+
+// ─── Home-directory expansion ─────────────────────────────────────────────────
+/** Expand a leading `~` to the user's home directory (mirrors export-cli.mjs). */
+function expandHome(p) {
+  return p && p.startsWith('~') ? path.join(homedir(), p.slice(1)) : p;
+}
 
 // ─── ANSI color helpers ───────────────────────────────────────────────────────
 const c = {
@@ -112,10 +118,28 @@ function validateJson(rawJson, context) {
 }
 
 /**
- * Backup + write project.nucleo (UTF-8 no-BOM).
+ * Backup a file OUTSIDE any git repo (to the OS temp dir), so the copy can
+ * never be picked up by `git add .` and leak into a PR. Returns the backup
+ * path. Used instead of writing a sibling `<file>.bak`, which previously ended
+ * up staged/committed alongside the real change (e.g. _icons-map.scss.bak,
+ * project.nucleo.bak).
+ */
+function backupOutsideRepo(filePath) {
+  const hash = crypto.createHash('sha1').update(filePath).digest('hex').slice(0, 8);
+  const backupPath = path.join(
+    tmpdir(),
+    `vibe-backup-${path.basename(filePath)}-${hash}-${Date.now()}.bak`,
+  );
+  fs.copyFileSync(filePath, backupPath);
+  return backupPath;
+}
+
+/**
+ * Backup + write project.nucleo (UTF-8 no-BOM). The backup goes to the OS temp
+ * dir (not a sibling `.bak`) so it never leaks into the theme_icons commit.
  */
 function writeProjectNucleo(nucleoPath, rawJson) {
-  fs.copyFileSync(nucleoPath, nucleoPath + '.bak');
+  backupOutsideRepo(nucleoPath);
   fs.writeFileSync(nucleoPath, rawJson, 'utf8');
 }
 
@@ -177,25 +201,32 @@ function stripLeadingSlash(s) {
 }
 
 // ─── Export runner ────────────────────────────────────────────────────────────
+
+/** Write exportConfig to a temp file and build the spawn args for scriptPath. */
+function prepareExportSpawn(scriptPath, projectDir, outputDir, exportConfig) {
+  const tmpDir  = mkdtempSync(path.join(tmpdir(), 'nucleo-cli-'));
+  const cfgPath = path.join(tmpDir, 'export-config.json');
+  writeFileSync(cfgPath, JSON.stringify(exportConfig, null, 2), 'utf8');
+
+  // Bundle mode: all scripts are inside the single bundle file. Re-invoke it
+  // with --script <name> instead of spawning a separate .js file on disk.
+  const isBundle = path.basename(process.argv[1]).endsWith('.bundle.js');
+  const scriptName = path.basename(scriptPath, '.js'); // e.g. 'nucleo-export'
+  const args = isBundle
+    ? [process.argv[1], '--script', scriptName, projectDir, outputDir]
+    : [scriptPath, projectDir, outputDir];
+
+  return { args, cfgPath };
+}
+
 /**
- * Spawn nucleo-export.js or nucleo-sprite.js with the given config.
- * Writes the config to a temp file and passes its path via EXPORT_CONFIG env var.
+ * Spawn nucleo-export.js or nucleo-sprite.js with the given config, inheriting
+ * this process's stdio (CLI usage — output goes straight to the terminal).
  * Returns a Promise that resolves when the child exits 0, rejects otherwise.
  */
 function spawnExport(scriptPath, projectDir, outputDir, exportConfig) {
   return new Promise((resolve, reject) => {
-    const tmpDir  = mkdtempSync(path.join(tmpdir(), 'nucleo-cli-'));
-    const cfgPath = path.join(tmpDir, 'export-config.json');
-    writeFileSync(cfgPath, JSON.stringify(exportConfig, null, 2), 'utf8');
-
-    // Bundle mode: all scripts are inside the single bundle file. Re-invoke it
-    // with --script <name> instead of spawning a separate .js file on disk.
-    const isBundle = path.basename(process.argv[1]).endsWith('.bundle.js');
-    const scriptName = path.basename(scriptPath, '.js'); // e.g. 'nucleo-export'
-    const args = isBundle
-      ? [process.argv[1], '--script', scriptName, projectDir, outputDir]
-      : [scriptPath, projectDir, outputDir];
-
+    const { args, cfgPath } = prepareExportSpawn(scriptPath, projectDir, outputDir, exportConfig);
     const child = spawn(
       process.execPath,
       args,
@@ -209,8 +240,33 @@ function spawnExport(scriptPath, projectDir, outputDir, exportConfig) {
   });
 }
 
+/**
+ * Same as spawnExport, but captures stdout/stderr instead of inheriting the
+ * parent's stdio — used by the bridge server to stream export output to a
+ * browser client instead of printing to the server's own terminal.
+ * onData(text) is called for each chunk of stdout/stderr as it arrives.
+ */
+function spawnExportCaptured(scriptPath, projectDir, outputDir, exportConfig, onData) {
+  return new Promise((resolve, reject) => {
+    const { args, cfgPath } = prepareExportSpawn(scriptPath, projectDir, outputDir, exportConfig);
+    const child = spawn(
+      process.execPath,
+      args,
+      { env: { ...process.env, EXPORT_CONFIG: cfgPath }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    child.stdout.on('data', chunk => onData(chunk.toString('utf8')));
+    child.stderr.on('data', chunk => onData(chunk.toString('utf8')));
+    child.on('close', code => {
+      if (code !== 0) reject(new Error(`Export script exited with code ${code}`));
+      else resolve();
+    });
+    child.on('error', reject);
+  });
+}
+
 module.exports = {
   c,
+  expandHome,
   generateUuid,
   findSvgs,
   readProjectNucleo,
@@ -218,7 +274,9 @@ module.exports = {
   spliceIconsIntoRawJson,
   validateJson,
   writeProjectNucleo,
+  backupOutsideRepo,
   parseArgs,
   stripLeadingSlash,
   spawnExport,
+  spawnExportCaptured,
 };

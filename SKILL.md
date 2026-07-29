@@ -66,7 +66,9 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/nhut/nhut-bitbucket && source ~/.nvm/nv
 > Capture stdout separately if needed: `node workflow.bundle.js ... 2>/dev/null`
 
 ### What the script does automatically:
-1. Clones `git@bitbucket-nhut:axonivy-prod/theme_icons.git` to an isolated temp dir (5 retries)
+1. Clones `git@bitbucket-nhut:axonivy-prod/theme_icons.git` to an isolated temp dir (5 retries).
+   Set `USE_DIRECT_GIT_HOST=true` in `.env` if your machine's SSH config uses the plain
+   `bitbucket.org` host instead of a `bitbucket-nhut` alias.
 2. Audits `project.nucleo` files for **all pipelines** — skips icons already exported
 3. Runs each pipeline's export sequentially (font generation + copy to klara-theme)
 4. **Single commit + push** covering all pipelines → **one PR**

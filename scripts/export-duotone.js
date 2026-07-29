@@ -34,103 +34,39 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { search, confirm, input } = require('@inquirer/prompts');
 const {
-  c, generateUuid, findSvgs,
-  readProjectNucleo, buildIconJson, spliceIconsIntoRawJson,
-  validateJson, writeProjectNucleo, parseArgs, stripLeadingSlash, spawnExport,
+  c, expandHome, readProjectNucleo, parseArgs, spawnExport,
 } = require('./lib/common');
+const {
+  resolveDuotonePaths, searchDuotonePipeline, registerDuotonePipeline, deployDuotonePipeline,
+} = require('./lib/pipelines');
 const { replaceColorsDuotone } = require('./lib/replace-colors-duotone');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const PROJECT_ROOT = process.env.PROJECT_ROOT;
+const PROJECT_ROOT = expandHome(process.env.PROJECT_ROOT);
 if (!PROJECT_ROOT) {
   console.error(c.red('ERROR: PROJECT_ROOT not set. Check your .env file.'));
   process.exit(1);
 }
-
-const ASSETS_MY_SETS     = process.env.ASSETS_MY_SETS
-  || path.join(PROJECT_ROOT, '_Assets', 'my-sets');
-const UX_ILLUST_ROOT     = path.join(ASSETS_MY_SETS, 'Streamline UX Illustrations');
-
-const DUOTONE_SOURCE_DIR = process.env.SOURCE_DIR_DUOTONE
-  || path.join(UX_ILLUST_ROOT, 'UX Duotone');
-
-const NC_PROJECT_UUID    = process.env.NUCLEO_UUID_ILLUSTRATIONS_DUOTONE || '';
-const NC_PROJECT_DIR     = path.join(PROJECT_ROOT, 'nc-projects', NC_PROJECT_UUID);
-const NUCLEO_PATH        = path.join(NC_PROJECT_DIR, 'project.nucleo');
-
-const OUTPUT_SUBDIR      = stripLeadingSlash(process.env.OUTPUT_SUBDIR_ILLUSTRATIONS_DUOTONE || '_Assets/StreamlineDuotoneIcons');
-const OUTPUT_DIR         = path.join(PROJECT_ROOT, OUTPUT_SUBDIR);
-const SPRITE_INPUT_SVG   = path.join(OUTPUT_DIR, 'img',    'streamline-icon-duotone.svg');
-const EXPORT_SVG         = path.join(OUTPUT_DIR, 'output', 'streamline-icon-duotone.svg');
-
-// Path to the sprite-generation script (project root)
-const NUCLEO_SPRITE_SCRIPT = path.join(__dirname, '..', 'nucleo-sprite.js');
-
-const SPRITE_CONFIG = {
-  svgsprite: {
-    baseClass:      'streamline-icon-duotone',
-    idPrefix:       'streamline-icon-duotone-',
-    assetsPath:     'img',
-    fileName:       'streamline-icon-duotone.svg',
-    metadataEnable: true,
-    metadata: {
-      author: 'Klara Design', description: 'Built on Streamline', version: '0.1',
-      copyright: 'Klara Design', license: '', url: '',
-    },
-  },
-};
-
-// ─── Search helper ───────────────────────────────────────────────────────────
-
-function searchDuotone(term) {
-  if (!term || !term.trim()) return [];
-  return findSvgs(DUOTONE_SOURCE_DIR, term.trim()).sort((a, b) => a.basename.localeCompare(b.basename));
+if (!fs.existsSync(PROJECT_ROOT)) {
+  console.error(c.red(`ERROR: PROJECT_ROOT does not exist: ${PROJECT_ROOT}`));
+  process.exit(1);
 }
 
-// ─── Register one illustration ────────────────────────────────────────────────
+const paths = resolveDuotonePaths(PROJECT_ROOT);
+const { NC_PROJECT_DIR, NUCLEO_PATH, OUTPUT_DIR, SPRITE_INPUT_SVG, EXPORT_SVG, SPRITE_CONFIG, NUCLEO_SPRITE_SCRIPT } = paths;
+
+// ─── Search / register wrappers (shared logic lives in lib/pipelines.js) ──────
+
+function searchDuotone(term) {
+  return searchDuotonePipeline(paths, term);
+}
 
 function registerIllustration(selectedFile, existingNames) {
-  const svgBaseName = selectedFile.basename;
-  const rel         = selectedFile.fullPath.replace(UX_ILLUST_ROOT + path.sep, '');
-
-  if (existingNames.has(svgBaseName)) {
-    console.log(c.yellow(
-      `  [SKIP] '${svgBaseName}' already exists in project.nucleo (uuid: ${existingNames.get(svgBaseName)})`,
-    ));
-    return null;
-  }
-
-  const { rawJson, obj } = readProjectNucleo(NUCLEO_PATH);
-  const initialCount     = (obj.icons || []).length;
-  const currentMax       = (obj.icons || []).reduce((m, i) => Math.max(m, i.place), 0);
-  const nextPlace        = currentMax + 1;
-
-  const newUuid  = generateUuid();
-  const destPath = path.join(NC_PROJECT_DIR, newUuid + '.svg');
-  fs.copyFileSync(selectedFile.fullPath, destPath);
-  console.log(c.green(`  [COPY] ${rel} -> ${newUuid}.svg`));
-
-  const iconJson = buildIconJson({
-    uuid:     newUuid,
-    name:     svgBaseName,
-    filename: svgBaseName + '.svg',
-    width:    100,
-    height:   100,
-    klass:    'colored',
-    grid:     128,
-    place:    nextPlace,
-    fillAll:  0,
+  return registerDuotonePipeline(paths, selectedFile, existingNames, msg => {
+    const color = msg.startsWith('[SKIP]') ? c.yellow : c.green;
+    console.log(color(`  ${msg}`));
   });
-
-  const updatedRaw = spliceIconsIntoRawJson(rawJson, [iconJson], initialCount);
-  const validated  = validateJson(updatedRaw, 'project.nucleo');
-  console.log(c.yellow(`  Validation: ${validated.icons.length} icon(s) total (was ${initialCount}).`));
-
-  writeProjectNucleo(NUCLEO_PATH, updatedRaw);
-  existingNames.set(svgBaseName, newUuid);
-  console.log(c.green(`  [ADD]  Registered '${svgBaseName}' (uuid: ${newUuid}, place: ${nextPlace})`));
-  return svgBaseName;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -282,9 +218,14 @@ async function main() {
     console.log(c.yellow(`Auto-copying to klara-theme (--auto-copy): ${themePath}`));
   }
 
-  const klaraTarget = path.join(themePath, 'src', 'lib', 'assets', 'icons', 'streamline-icon-duotone.svg');
-  fs.copyFileSync(EXPORT_SVG, klaraTarget);
-  console.log(c.green(`Copied to klara-theme: ${klaraTarget}`));
+  let deployResult;
+  try {
+    deployResult = deployDuotonePipeline(paths, themePath);
+  } catch (err) {
+    console.error(c.red(`ERROR: ${err.message}`));
+    process.exit(1);
+  }
+  console.log(c.green(`Copied to klara-theme: ${deployResult.target}`));
 
   console.log(c.cyan('\n=== Done! ==='));
   console.log(c.yellow('Next steps:'));

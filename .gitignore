@@ -2,6 +2,7 @@
 /dist
 
 .env
+/server/.token
 /.claude
 /.epost-data
 .epost-metadata.json

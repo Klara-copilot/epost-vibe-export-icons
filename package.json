@@ -15,6 +15,10 @@
     "export": "node nucleo-export.js",
     "watch": "node nucleo-watch.js",
     "cli": "node export-cli.mjs",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "server": "node server/index.js",
+    "dev": "concurrently -n bridge,web -c cyan,green -k \"npm run server\" \"npm --prefix web run dev\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -25,16 +29,23 @@
     "@inquirer/prompts": "^7.10.1",
     "@resvg/resvg-js": "^2.6.2",
     "chokidar": "^3.6.0",
+    "cors": "^2.8.6",
     "diff": "^9.0.0",
     "dotenv": "^16.6.1",
+    "express": "^5.2.1",
     "fast-glob": "^3.3.3",
     "fs-extra": "^11.3.4",
+    "ink": "^5.2.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "nunjucks": "^3.2.4",
+    "react": "^18.3.1",
     "simple-git": "^3.36.0",
     "svgo": "^3.3.3",
     "webfont": "^11.2.26"
   },
   "devDependencies": {
+    "concurrently": "^9.2.4",
     "esbuild": "^0.24.2"
   }
 }
