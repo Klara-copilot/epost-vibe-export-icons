@@ -1442,13 +1442,32 @@ button:disabled {
 
 /* The icon source set is mixed: Regular/Light are stroke-based
    (fill="none" stroke="#000000"), Bold/Glyph are fill-based (fill="#000000").
-   Recolor only the attributes that actually paint something — touching
-   fill="none" would turn every outline icon into a solid blob. */
-.svg-preview svg [stroke]:not([stroke="none"]) {
+   Scope currentColor recoloring ONLY to the icon pipeline — duotone and
+   illustration SVGs have intentional multi-color fills; forcing currentColor
+   on them turns every duotone into a flat monochrome blob. */
+.svg-preview[data-pipeline="icon"] svg [stroke]:not([stroke="none"]) {
   stroke: currentColor;
 }
-.svg-preview svg [fill]:not([fill="none"]) {
+.svg-preview[data-pipeline="icon"] svg [fill]:not([fill="none"]) {
   fill: currentColor;
+}
+
+/* Duotone and illustration previews: keep their real SVG colors.
+   A neutral white surface makes the palette visible regardless of
+   the surrounding dark theme. */
+.svg-preview[data-pipeline="duotone"],
+.svg-preview[data-pipeline="illustration"] {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  padding: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .svg-preview[data-pipeline="duotone"],
+  .svg-preview[data-pipeline="illustration"] {
+    background: #f2f2fa;
+    border-color: rgba(0, 0, 0, 0.08);
+  }
 }
 
 .svg-preview--inline {
@@ -1580,4 +1599,830 @@ button:disabled {
   display: inline-block;
   animation: spin 1s linear infinite;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WORKFLOW CANVAS  — React Flow "n8n-style" live pipeline graph
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.flow-canvas {
+  position: relative;
+  height: 420px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(circle at 20% 10%, rgba(170, 59, 255, 0.07), transparent 55%),
+    var(--bg);
+}
+
+.flow-canvas__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  opacity: 0.5;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.flow-canvas--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  opacity: 0.5;
+}
+
+.flow-canvas__bg {
+  opacity: 0.6;
+}
+
+.flow-canvas__controls button {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+/* ── Node ─────────────────────────────────────────────────────────────── */
+
+.flow-node {
+  position: relative;
+  width: 220px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.flow-node__handle {
+  width: 6px;
+  height: 6px;
+  background: var(--border);
+  border: none;
+}
+
+.flow-node__body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 12px;
+}
+
+.flow-node__body:disabled {
+  cursor: default;
+}
+
+.flow-node__icon-wrap {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--code-bg);
+  color: var(--text);
+}
+
+.flow-node__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.flow-node__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-node__detail {
+  font-size: 10.5px;
+  opacity: 0.6;
+  font-family: ui-monospace, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-node__status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-node__status--start  { color: var(--accent); }
+.flow-node__status--ok     { color: var(--success-border); }
+.flow-node__status--warn   { color: var(--warning-border); }
+.flow-node__status--error  { color: var(--error-border); }
+.flow-node__status--pending{ color: var(--border); }
+
+.flow-node__log-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Status-driven node chrome */
+.flow-node--pending { opacity: 0.55; }
+
+.flow-node--start {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(170, 59, 255, 0.14), 0 2px 14px rgba(170, 59, 255, 0.18);
+  animation: flow-node-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes flow-node-breathe {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(170, 59, 255, 0.10), 0 2px 14px rgba(170, 59, 255, 0.14); }
+  50%      { box-shadow: 0 0 0 5px rgba(170, 59, 255, 0.18), 0 2px 18px rgba(170, 59, 255, 0.24); }
+}
+
+.flow-node--ok {
+  border-color: var(--success-border);
+  animation: flow-node-pop 0.35s ease-out;
+}
+
+@keyframes flow-node-pop {
+  0%   { transform: scale(0.94); }
+  60%  { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+
+.flow-node--warn { border-color: var(--warning-border); }
+
+.flow-node--error {
+  border-color: var(--error-border);
+  animation: flow-node-shake 0.4s ease-in-out;
+}
+
+@keyframes flow-node-shake {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-3px); }
+  75%      { transform: translateX(3px); }
+}
+
+/* ── Edges ────────────────────────────────────────────────────────────── */
+
+.flow-edge {
+  stroke: var(--border);
+  stroke-width: 1.5;
+  opacity: 0.6;
+}
+
+.flow-edge--done {
+  stroke: var(--success-border);
+  opacity: 0.8;
+}
+
+.flow-edge--active {
+  stroke: var(--accent);
+  opacity: 0.9;
+}
+
+.flow-edge__flow {
+  stroke: url(#flow-edge-gradient), var(--accent);
+  stroke-width: 2.5;
+  stroke-dasharray: 6 10;
+  animation: flow-edge-dash 0.8s linear infinite;
+  filter: drop-shadow(0 0 4px rgba(170, 59, 255, 0.6));
+}
+
+@keyframes flow-edge-dash {
+  to { stroke-dashoffset: -32; }
+}
+
+/* ── Side drawer (per-stage logs) ────────────────────────────────────── */
+
+.flow-canvas__drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(340px, 80%);
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+}
+
+.flow-canvas__drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.flow-canvas__drawer-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.flow-canvas__drawer-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text);
+  opacity: 0.6;
+  padding: 2px 6px;
+}
+
+.flow-canvas__drawer-close:hover {
+  opacity: 1;
+}
+
+.flow-canvas__drawer-body {
+  flex: 1;
+  margin: 0;
+  padding: 12px;
+  overflow-y: auto;
+  font-size: 11.5px;
+  line-height: 1.6;
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--code-bg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MISSION CONTROL  — full-bleed "holographic" Auto mode
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Art direction: deep space, aurora nebula, machine nodes floating in the
+   void, luminous edges, glass-morphism panels sliding over the canvas.
+   The canvas IS the app — no card stack, no page header.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Root + reset ──────────────────────────────────────────────────────── */
+
+.mc-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #08090e;
+  color: #e2e4f0;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+body:has(.mc-root) {
+  overflow: hidden;
+}
+
+/* ── Nebula background ─────────────────────────────────────────────────── */
+
+.mc-nebula {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.mc-nebula__layer {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0;
+  animation: mc-nebula-breathe 12s ease-in-out infinite;
+}
+
+.mc-nebula__layer--1 {
+  width: 80vw; height: 70vh;
+  top: -20%; left: -15%;
+  background: radial-gradient(circle, rgba(120, 40, 220, 0.35), transparent 65%);
+  animation-delay: 0s;
+  animation-duration: 14s;
+}
+
+.mc-nebula__layer--2 {
+  width: 60vw; height: 60vh;
+  bottom: -10%; right: -10%;
+  background: radial-gradient(circle, rgba(20, 140, 220, 0.28), transparent 65%);
+  animation-delay: -5s;
+  animation-duration: 18s;
+}
+
+.mc-nebula__layer--3 {
+  width: 45vw; height: 45vh;
+  top: 30%; left: 35%;
+  background: radial-gradient(circle, rgba(180, 40, 120, 0.18), transparent 65%);
+  animation-delay: -9s;
+  animation-duration: 22s;
+}
+
+@keyframes mc-nebula-breathe {
+  0%, 100% { opacity: 1; transform: scale(1)    translate(0, 0); }
+  33%       { opacity: 0.7; transform: scale(1.08) translate(2%, 1.5%); }
+  66%       { opacity: 0.9; transform: scale(0.96) translate(-1.5%, 2%); }
+}
+
+/* Grain overlay */
+.mc-nebula__grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 256px;
+  pointer-events: none;
+}
+
+/* ── HUD top bar ────────────────────────────────────────────────────────── */
+
+.mc-hud {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 52px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  background: rgba(8, 9, 14, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mc-hud__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  white-space: nowrap;
+  margin-right: auto;
+}
+
+.mc-hud__brand-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #aa3bff, #00d4ff);
+  box-shadow: 0 0 10px rgba(170, 59, 255, 0.7);
+  animation: mc-brand-pulse 2s ease-in-out infinite;
+}
+
+@keyframes mc-brand-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(170, 59, 255, 0.6); }
+  50%       { box-shadow: 0 0 16px rgba(170, 59, 255, 0.9), 0 0 28px rgba(0, 212, 255, 0.3); }
+}
+
+/* Inline the bridge status banner inside HUD */
+.mc-hud .banner {
+  font-size: 12px;
+  padding: 4px 10px;
+  margin: 0;
+  border-radius: 20px;
+}
+
+.mc-hud__mode-switch {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mc-hud__mode-btn {
+  padding: 4px 12px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mc-hud__mode-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.mc-hud__mode-btn--active,
+.mc-hud__mode-btn:disabled {
+  background: linear-gradient(135deg, rgba(170, 59, 255, 0.7), rgba(100, 50, 220, 0.7));
+  color: #fff;
+  cursor: default;
+}
+
+/* ── Full-bleed scene ───────────────────────────────────────────────────── */
+
+.mc-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ── Canvas phases — the React Flow graph fills the full screen ─────────── */
+
+.mc-canvas-phase {
+  position: absolute;
+  inset: 0;
+  /* Leave room for HUD */
+  top: 52px;
+}
+
+.mc-canvas-phase .flow-canvas {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+.mc-canvas-phase .react-flow,
+.mc-canvas-phase .react-flow__renderer {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ── HUD overlay on running/preparing canvas ────────────────────────────── */
+
+.mc-overlay {
+  position: absolute;
+  top: 68px; left: 20px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mc-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: rgba(8, 9, 14, 0.7);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.mc-status-pill--active .mc-status-pill__dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #aa3bff;
+  box-shadow: 0 0 0 0 rgba(170, 59, 255, 0.5);
+  animation: mc-dot-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes mc-dot-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(170, 59, 255, 0.5); }
+  70%  { box-shadow: 0 0 0 7px rgba(170, 59, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(170, 59, 255, 0); }
+}
+
+.mc-cancel-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(220, 60, 60, 0.4);
+  background: rgba(220, 60, 60, 0.12);
+  color: rgba(255, 120, 120, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mc-cancel-btn:hover {
+  background: rgba(220, 60, 60, 0.25);
+}
+
+/* ── Console drawer — collapsed at bottom of canvas ────────────────────── */
+
+.mc-console-drawer {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  z-index: 10;
+  max-height: 260px;
+}
+
+.mc-console-drawer .live-console {
+  background: rgba(8, 9, 14, 0.82);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 0;
+}
+
+.mc-console-drawer .live-console__body {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* ── Hero — cinematic ready state ────────────────────────────────────────── */
+
+.mc-hero {
+  position: absolute;
+  inset: 0;
+  top: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  z-index: 5;
+  padding: 24px;
+}
+
+.mc-hero__eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #aa3bff;
+  margin: 0 0 16px;
+}
+
+.mc-hero__title {
+  font-size: clamp(52px, 8vw, 96px);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  margin: 0 0 20px;
+  line-height: 1;
+  background: linear-gradient(135deg, #ffffff 30%, #aa3bff 70%, #00d4ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 40px rgba(170, 59, 255, 0.4));
+}
+
+.mc-hero__sub {
+  font-size: 17px;
+  color: rgba(255, 255, 255, 0.5);
+  max-width: 420px;
+  line-height: 1.6;
+  margin: 0 0 40px;
+}
+
+.mc-hero__cta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 36px;
+  border-radius: 14px;
+  border: none;
+  background: linear-gradient(135deg, #aa3bff 0%, #6a28ff 60%, #0099ee 100%);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.12) inset,
+    0 6px 40px rgba(170, 59, 255, 0.5),
+    0 2px 8px rgba(0,0,0,0.4);
+  transition: box-shadow 0.25s;
+  position: relative;
+  overflow: hidden;
+}
+
+.mc-hero__cta::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.mc-hero__cta:hover {
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.18) inset,
+    0 8px 56px rgba(170, 59, 255, 0.7),
+    0 2px 8px rgba(0,0,0,0.5);
+}
+
+.mc-hero__cta-icon {
+  font-size: 20px;
+}
+
+/* ── Selection phase — side panel over ghosted canvas ──────────────────── */
+
+.mc-select-phase {
+  position: absolute;
+  inset: 0;
+  top: 52px;
+  display: flex;
+}
+
+.mc-select-canvas-bg {
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  filter: blur(1px);
+}
+
+.mc-select-canvas-bg .flow-canvas {
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+.mc-select-panel {
+  position: relative;
+  z-index: 5;
+  margin: auto;
+  margin-right: 24px;
+  width: min(520px, 92vw);
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Scroll snap */
+  scroll-padding: 12px;
+}
+
+.mc-panel-section {
+  background: rgba(14, 16, 26, 0.82);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+.mc-panel__title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #f0f2ff;
+}
+
+.mc-panel__title-icon {
+  color: #aa3bff;
+}
+
+.mc-panel__hint {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 0 0 16px;
+}
+
+/* ── Done phase ─────────────────────────────────────────────────────────── */
+
+.mc-done-phase {
+  position: absolute;
+  inset: 0;
+  top: 52px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.mc-done-canvas-bg {
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  filter: blur(2px);
+}
+
+.mc-done-canvas-bg .flow-canvas {
+  height: 100%;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+.mc-result-panel {
+  position: relative;
+  z-index: 5;
+  width: min(680px, 94vw);
+  margin: 40px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 60px;
+}
+
+/* Make result-card look native to the Mission Control theme */
+.mc-result-panel .result-card {
+  background: rgba(14, 16, 26, 0.88);
+  backdrop-filter: blur(20px);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e2e4f0;
+}
+
+.mc-result-panel .result-card--success {
+  border-color: rgba(52, 168, 83, 0.4);
+  box-shadow: 0 0 40px rgba(52, 168, 83, 0.1);
+}
+
+.mc-result-panel .auto-page__fatal {
+  background: rgba(217, 48, 37, 0.12);
+  border-color: rgba(217, 48, 37, 0.4);
+  color: #ff8080;
+}
+
+.mc-result-panel .push-retry-card {
+  background: rgba(217, 164, 65, 0.1);
+  backdrop-filter: blur(14px);
+  border-color: rgba(217, 164, 65, 0.3);
+}
+
+.mc-result-panel .live-console {
+  background: rgba(8, 9, 14, 0.7);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+}
+
+/* ── Upgraded flow nodes for MC theme ───────────────────────────────────── */
+
+.mc-scene .flow-node {
+  background: rgba(14, 16, 26, 0.75);
+  backdrop-filter: blur(12px);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e2e4f0;
+}
+
+.mc-scene .flow-node__icon-wrap {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mc-scene .flow-node__label {
+  color: #f0f2ff;
+}
+
+.mc-scene .flow-node--start {
+  border-color: rgba(170, 59, 255, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(170, 59, 255, 0.3),
+    0 0 24px rgba(170, 59, 255, 0.3),
+    0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.mc-scene .flow-node--ok {
+  border-color: rgba(0, 212, 100, 0.5);
+  box-shadow: 0 0 16px rgba(0, 212, 100, 0.15), 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.mc-scene .flow-node--error {
+  border-color: rgba(255, 80, 80, 0.55);
+  box-shadow: 0 0 16px rgba(255, 80, 80, 0.15), 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.mc-scene .flow-canvas__bg {
+  opacity: 0.25;
+}
+
+/* ── Flowing edge — brighten in MC theme ─────────────────────────────────── */
+
+.mc-scene .flow-edge__flow {
+  stroke: rgba(170, 59, 255, 0.9);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 8px rgba(170, 59, 255, 0.8)) drop-shadow(0 0 2px rgba(0, 212, 255, 0.5));
+}
+
+/* ── BridgeStatusBanner inside HUD ──────────────────────────────────────── */
+
+.mc-hud .banner--warning {
+  background: rgba(58, 47, 19, 0.8);
+  border-color: rgba(217, 164, 65, 0.5);
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 

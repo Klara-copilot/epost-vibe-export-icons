@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Toaster } from 'sonner';
 import { loadSettings, saveSettings } from './state/settings';
 import { useBridgeStatus } from './hooks/useBridgeStatus';
 import { BridgeStatusBanner } from './components/BridgeStatusBanner';
@@ -31,38 +32,52 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <div className="app__header-top">
-          <div>
-            <h1>Icon Export</h1>
-            <p>Search, register, export, and deploy Streamline icons.</p>
-          </div>
-          <div className="app__mode-switch">
-            <button
-              className={`app__mode-btn ${mode === 'auto' ? 'app__mode-btn--active' : ''}`}
-              onClick={() => setMode('auto')}
-              title="Fully automated end-to-end workflow"
-            >
-              ⚡ Auto
-            </button>
-            <button
-              className={`app__mode-btn ${mode === 'wizard' ? 'app__mode-btn--active' : ''}`}
-              onClick={() => setMode('wizard')}
-              title="Step-by-step manual wizard"
-            >
-              🧙 Wizard
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <BridgeStatusBanner status={bridgeStatus} />
+    <>
+      <Toaster richColors position="top-right" theme="dark" />
 
       {mode === 'auto' ? (
-        <AutoWorkflowPage settings={settings} />
+        /* Auto mode is full-bleed — no .app container, no page header */
+        <div className="mc-root">
+          {/* Floating HUD — top bar, always visible over the canvas */}
+          <header className="mc-hud">
+            <span className="mc-hud__brand">
+              <span className="mc-hud__brand-dot" />
+              Icon Ship
+            </span>
+            <BridgeStatusBanner status={bridgeStatus} />
+            <div className="mc-hud__mode-switch">
+              <button
+                className="mc-hud__mode-btn mc-hud__mode-btn--active"
+                disabled
+              >⚡ Auto</button>
+              <button
+                className="mc-hud__mode-btn"
+                onClick={() => setMode('wizard')}
+              >🧙 Wizard</button>
+            </div>
+          </header>
+          <AutoWorkflowPage settings={settings} />
+        </div>
       ) : (
-        <>
+        <div className="app">
+          <header className="app__header">
+            <div className="app__header-top">
+              <div>
+                <h1>Icon Export</h1>
+                <p>Search, register, export, and deploy Streamline icons.</p>
+              </div>
+              <div className="app__mode-switch">
+                <button
+                  className="app__mode-btn"
+                  onClick={() => setMode('auto')}
+                >⚡ Auto</button>
+                <button className="app__mode-btn app__mode-btn--active" disabled>
+                  🧙 Wizard
+                </button>
+              </div>
+            </div>
+          </header>
+          <BridgeStatusBanner status={bridgeStatus} />
           <StepNav current={step} onSelect={setStep} />
           <main className="app__main">
             {step === 'settings' && (
@@ -74,8 +89,8 @@ export default function App() {
             {step === 'export' && <ExportPage settings={settings} />}
             {step === 'deploy' && <DeployPage settings={settings} staged={staged} />}
           </main>
-        </>
+        </div>
       )}
-    </div>
+    </>
   );
 }

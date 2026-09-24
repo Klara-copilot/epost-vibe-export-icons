@@ -17,6 +17,7 @@
     "cli": "node export-cli.mjs",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
+    "setup-web-ui": "node scripts/setup-web-ui.js",
     "server": "node server/index.js",
     "dev": "concurrently -n bridge,web -c cyan,green -k \"npm run server\" \"npm --prefix web run dev\"",
     "test": "echo \"Error: no test specified\" && exit 1"

@@ -128,7 +128,8 @@ function extractInnerContent(svgString) {
  */
 function buildSprite(symbols) {
   // NucleoApp emits the sprite as a single compact line (no newlines between elements).
-  return '<svg xmlns="http://www.w3.org/2000/svg" style="height: 0; width: 0; position: absolute;">' +
+  // viewBox="0 0 0 0" keeps the hidden wrapper from adopting the default 300x150 viewport.
+  return '<svg viewBox="0 0 0 0" xmlns="http://www.w3.org/2000/svg" style="height: 0; width: 0; position: absolute;">' +
     symbols.join('') +
     '</svg>';
 }

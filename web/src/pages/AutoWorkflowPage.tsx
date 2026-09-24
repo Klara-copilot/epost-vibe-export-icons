@@ -1,5 +1,6 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, Suspense, lazy } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
 import type { Settings } from '../state/settings';
 import type {
   WorkflowSelection,
@@ -15,6 +16,13 @@ import { PipelineTimeline, type StageState } from '../components/auto/PipelineTi
 import { WorkflowResultCard } from '../components/auto/WorkflowResultCard';
 import { LiveConsole, type ConsoleLine } from '../components/auto/LiveConsole';
 
+// React Flow (+ dagre-free layout code) is one of the heavier deps in this
+// app; lazy-load it so the initial bundle stays small and the canvas only
+// downloads once the user actually reaches the preparing/running phases.
+const WorkflowCanvas = lazy(() =>
+  import('../components/auto/WorkflowCanvas').then(m => ({ default: m.WorkflowCanvas })),
+);
+
 interface Props {
   settings: Settings;
 }
@@ -28,6 +36,7 @@ type Phase = 'ready' | 'preparing' | 'selecting' | 'running' | 'done' | 'error';
 const STAGE_ORDER = [
   'clone-theme-icons',
   'clone-luz-next',
+  'clone-klara-theme',
   'audit-icon',
   'audit-duotone',
   'audit-illustration',
@@ -36,6 +45,7 @@ const STAGE_ORDER = [
   'export-illustration',
   'commit-theme-icons',
   'commit-luz-next',
+  'commit-klara-theme',
   'cleanup',
   'system',
 ];
@@ -214,9 +224,17 @@ export function AutoWorkflowPage({ settings }: Props) {
             setRunConsole(prev => [...prev, ...lines.map(line => ({ stage: event.stage, line, ts: Date.now() }))]);
           } else if (event.type === 'result') {
             setWorkflowResult(event.result);
+            if (event.result.status === 'success') {
+              toast.success('Workflow completed successfully');
+            } else if (event.result.status === 'partial') {
+              toast.warning('Workflow completed with some failures');
+            } else {
+              toast.error('Workflow failed');
+            }
           } else if (event.type === 'push-retry') {
             pushRetryPending = true;
             setPushRetry({ branchName: event.branchName, repos: event.repos });
+            toast.warning(`Push to ${event.repos.join(' & ')} failed — you can retry`);
           }
         },
         abort.signal,
@@ -271,7 +289,9 @@ export function AutoWorkflowPage({ settings }: Props) {
               ...prev,
               prUrl: event.prUrls['theme_icons'] ?? prev.prUrl,
               luzNextPrUrl: event.prUrls['luz_next'] ?? prev.luzNextPrUrl,
+              klaraThemePrUrl: event.prUrls['klara_theme'] ?? prev.klaraThemePrUrl,
             } : prev);
+            toast.success('Push succeeded');
           }
         },
         abort.signal,
@@ -286,6 +306,7 @@ export function AutoWorkflowPage({ settings }: Props) {
         line: `Retry push failed: ${err instanceof Error ? err.message : 'unknown error'}`,
         ts: Date.now(),
       }]);
+      toast.error('Retry push failed — you can try again');
     } finally {
       setRetrying(false);
     }
@@ -301,6 +322,7 @@ export function AutoWorkflowPage({ settings }: Props) {
       cancelWorkflow(settings, sessionId).catch(() => {});
     }
     abortRef.current?.abort();
+    toast('Cancelling workflow…');
   }, [phase, sessionId, settings]);
 
   const handleReset = useCallback(() => {
@@ -325,241 +347,150 @@ export function AutoWorkflowPage({ settings }: Props) {
   const isTerminal = phase === 'done' || phase === 'error';
 
   return (
-    <div className="auto-page">
-      {/* Background decoration */}
-      <div className="auto-page__bg" aria-hidden="true">
-        <div className="auto-page__orb auto-page__orb--1" />
-        <div className="auto-page__orb auto-page__orb--2" />
+    <div className="mc-scene">
+      {/* ── Ambient nebula ─────────────────────────────────────────────── */}
+      <div className="mc-nebula" aria-hidden="true">
+        <div className="mc-nebula__layer mc-nebula__layer--1" />
+        <div className="mc-nebula__layer mc-nebula__layer--2" />
+        <div className="mc-nebula__layer mc-nebula__layer--3" />
+        <div className="mc-nebula__grain" />
       </div>
 
       <AnimatePresence mode="wait">
         {phase === 'ready' ? (
-          // ── READY PHASE — nothing cloned yet ───────────────────────────────
-          <motion.div
-            key="ready"
-            className="auto-page__section"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25 }}
-          >
-            <div className="auto-page__glass-card auto-page__ready-card">
-              <h2 className="auto-page__section-title">
-                <span className="auto-page__title-icon">⚡</span>
-                Automated Icon Workflow
-              </h2>
-              <p className="auto-page__section-hint">
-                We'll clone <code>theme_icons</code> and <code>luz_next</code> first — the
-                icon source assets live inside theme_icons, so search only becomes available
-                once both repositories are ready.
-              </p>
-              <motion.button
-                className="launch-bar__start-btn"
-                onClick={handlePrepare}
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-              >
-                <span className="launch-bar__start-icon">⬇</span>
-                Clone repositories &amp; start
-              </motion.button>
-            </div>
+          <motion.div key="ready" className="mc-hero"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, scale: 0.97 }}
+            transition={{ duration: 0.4 }}>
+            <motion.p className="mc-hero__eyebrow"
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+              Streamline → Production
+            </motion.p>
+            <motion.h1 className="mc-hero__title"
+              initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
+              Icon Ship
+            </motion.h1>
+            <motion.p className="mc-hero__sub"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}>
+              Pick icons. Watch them travel the machine. Ship PRs to both repos.
+            </motion.p>
+            <motion.button className="mc-hero__cta" onClick={handlePrepare}
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
+              whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
+              <span className="mc-hero__cta-icon">⬇</span>
+              Clone &amp; Launch
+            </motion.button>
           </motion.div>
         ) : isPreparing ? (
-          // ── PREPARING PHASE — cloning both repos ───────────────────────────
-          <motion.div
-            key="preparing"
-            className="auto-page__section"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25 }}
-          >
-            <div className="auto-page__glass-card auto-page__glass-card--run">
-              <div className="auto-page__run-header">
-                <div className="auto-page__run-title-row">
-                  <div className="auto-page__pulse-dot" />
-                  <h2 className="auto-page__run-title">Cloning repositories…</h2>
-                </div>
-                <button className="auto-page__cancel-btn" onClick={handleCancel}>
-                  ✕ Cancel
-                </button>
+          <motion.div key="preparing" className="mc-canvas-phase"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+            <Suspense fallback={null}>
+              <WorkflowCanvas stages={prepareStages} expandedStage={expandedStage} onToggleExpand={handleToggleExpand} />
+            </Suspense>
+            <div className="mc-overlay">
+              <div className="mc-status-pill mc-status-pill--active">
+                <span className="mc-status-pill__dot" />
+                Cloning repositories…
               </div>
-              <PipelineTimeline
-                stages={prepareStages}
-                expandedStage={expandedStage}
-                onToggleExpand={handleToggleExpand}
-              />
+              <button className="mc-cancel-btn" onClick={handleCancel}>✕ Cancel</button>
             </div>
-            <div className="auto-page__glass-card auto-page__glass-card--run">
-              <LiveConsole lines={prepareConsole} title="Live clone log" />
+            <div className="mc-console-drawer">
+              <LiveConsole lines={prepareConsole} title="Clone log" defaultOpen={false} />
             </div>
           </motion.div>
         ) : isSelecting ? (
-          // ── SELECTION PHASE — session ready, search unlocked ───────────────
-          <motion.div
-            key="selection"
-            className="auto-page__section"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25 }}
-          >
-            <div className="auto-page__glass-card">
-              <h2 className="auto-page__section-title">
-                <span className="auto-page__title-icon">⬡</span>
-                Select Assets
-              </h2>
-              <p className="auto-page__section-hint">
-                Repositories cloned — search and add icons, duotones, and illustrations to export.
-              </p>
-              {sessionId && (
-                <SelectionSearch
-                  settings={settings}
-                  sessionId={sessionId}
-                  selections={selections}
-                  onAdd={handleAdd}
-                />
-              )}
+          <motion.div key="selection" className="mc-select-phase"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+            <div className="mc-select-canvas-bg">
+              <Suspense fallback={null}>
+                <WorkflowCanvas stages={prepareStages} expandedStage={null} onToggleExpand={() => {}} />
+              </Suspense>
             </div>
-
-            <div className="auto-page__glass-card">
-              <SelectionTray
-                settings={settings}
-                sessionId={sessionId}
-                selections={selections}
-                onRemove={handleRemove}
-                onClearAll={handleClearAll}
-              />
-            </div>
-
-            <div className="auto-page__glass-card">
-              <LaunchBar
-                branchId={branchId}
-                onBranchIdChange={setBranchId}
-                skipGit={skipGit}
-                onSkipGitChange={setSkipGit}
-                selectionCount={selections.length}
-                onStart={handleStart}
-                disabled={isRunning}
-              />
-            </div>
+            <motion.div className="mc-select-panel"
+              initial={{ x: 40, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 30, delay: 0.1 }}>
+              <div className="mc-panel-section">
+                <h2 className="mc-panel__title">
+                  <span className="mc-panel__title-icon">⬡</span>
+                  Select Assets
+                </h2>
+                <p className="mc-panel__hint">
+                  Repositories ready — search and add icons, duotones, or illustrations.
+                </p>
+                {sessionId && (
+                  <SelectionSearch settings={settings} sessionId={sessionId} selections={selections} onAdd={handleAdd} />
+                )}
+              </div>
+              <div className="mc-panel-section">
+                <SelectionTray settings={settings} sessionId={sessionId} selections={selections}
+                  onRemove={handleRemove} onClearAll={handleClearAll} />
+              </div>
+              <div className="mc-panel-section">
+                <LaunchBar branchId={branchId} onBranchIdChange={setBranchId}
+                  skipGit={skipGit} onSkipGitChange={setSkipGit}
+                  selectionCount={selections.length} onStart={handleStart} disabled={isRunning} />
+              </div>
+            </motion.div>
           </motion.div>
         ) : isRunning ? (
-          // ── RUNNING PHASE ─────────────────────────────────────────────────
-          <motion.div
-            key="running"
-            className="auto-page__section"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25 }}
-          >
-            <div className="auto-page__glass-card auto-page__glass-card--run">
-              <div className="auto-page__run-header">
-                <div className="auto-page__run-title-row">
-                  <div className="auto-page__pulse-dot" />
-                  <h2 className="auto-page__run-title">Workflow running…</h2>
-                </div>
-                <button className="auto-page__cancel-btn" onClick={handleCancel}>
-                  ✕ Cancel
-                </button>
+          <motion.div key="running" className="mc-canvas-phase"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+            <Suspense fallback={null}>
+              <WorkflowCanvas stages={runStages} expandedStage={expandedStage} onToggleExpand={handleToggleExpand} />
+            </Suspense>
+            <div className="mc-overlay">
+              <div className="mc-status-pill mc-status-pill--active">
+                <span className="mc-status-pill__dot" />
+                Workflow running…
               </div>
-              <PipelineTimeline
-                stages={runStages}
-                expandedStage={expandedStage}
-                onToggleExpand={handleToggleExpand}
-              />
+              <button className="mc-cancel-btn" onClick={handleCancel}>✕ Cancel</button>
             </div>
-            <div className="auto-page__glass-card auto-page__glass-card--run">
-              <LiveConsole lines={runConsole} title="Live workflow log" />
+            <div className="mc-console-drawer">
+              <LiveConsole lines={runConsole} title="Live log" defaultOpen={false} />
             </div>
           </motion.div>
         ) : (
-          // ── DONE / ERROR PHASE ────────────────────────────────────────────
-          <motion.div
-            key="done"
-            className="auto-page__section"
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25 }}
-          >
-            {/* Show the clone timeline too, if it ran, for post-run review */}
-            {phase === 'error' && prepareStages.length > 0 && runStages.length === 0 && (
-              <div className="auto-page__glass-card auto-page__glass-card--done">
-                <h3 className="auto-page__section-title">Clone log</h3>
-                <PipelineTimeline
-                  stages={prepareStages}
-                  expandedStage={expandedStage}
-                  onToggleExpand={handleToggleExpand}
-                />
-              </div>
-            )}
-
+          <motion.div key="done" className="mc-done-phase"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.35 }}>
             {runStages.length > 0 && (
-              <div className="auto-page__glass-card auto-page__glass-card--done">
-                <h3 className="auto-page__section-title">Stage log</h3>
-                <PipelineTimeline
-                  stages={runStages}
-                  expandedStage={expandedStage}
-                  onToggleExpand={handleToggleExpand}
-                />
+              <div className="mc-done-canvas-bg">
+                <Suspense fallback={null}>
+                  <WorkflowCanvas stages={runStages} expandedStage={null} onToggleExpand={() => {}} />
+                </Suspense>
               </div>
             )}
-
-            {/* Push failed (e.g. network error) but the commit is safe locally —
-                offer an unlimited manual retry that re-pushes only what's left. */}
-            {pushRetry && (
-              <div className="auto-page__glass-card push-retry-card">
-                <div className="push-retry-card__body">
-                  <span className="push-retry-card__icon">{retrying ? <span className="spin">⟳</span> : '⚠'}</span>
-                  <div className="push-retry-card__text">
-                    <strong>Push didn’t reach the remote</strong>
-                    <span>
-                      The commit is safe locally on <code>{pushRetry.branchName}</code>, but pushing{' '}
-                      {pushRetry.repos.join(' & ')} failed. Retry until it goes through — nothing is re-cloned or re-exported.
-                    </span>
+            <motion.div className="mc-result-panel"
+              initial={{ y: 32, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 28, delay: 0.15 }}>
+              {pushRetry && (
+                <div className="push-retry-card">
+                  <div className="push-retry-card__body">
+                    <span className="push-retry-card__icon">{retrying ? <span className="spin">⟳</span> : '⚠'}</span>
+                    <div className="push-retry-card__text">
+                      <strong>Push didn't reach the remote</strong>
+                      <span>Commit safe on <code>{pushRetry.branchName}</code>, but pushing {pushRetry.repos.join(' & ')} failed.</span>
+                    </div>
                   </div>
+                  <button className="push-retry-card__btn" onClick={handleRetryPush} disabled={retrying}>
+                    {retrying ? 'Retrying…' : '↻ Retry push'}
+                  </button>
                 </div>
-                <button
-                  className="push-retry-card__btn"
-                  onClick={handleRetryPush}
-                  disabled={retrying}
-                >
-                  {retrying ? 'Retrying…' : '↻ Retry push'}
-                </button>
-              </div>
-            )}
-
-            {fatalError && !workflowResult && (
-              <div className="auto-page__fatal">
-                <span className="auto-page__fatal-icon">✗</span>
-                {fatalError}
-              </div>
-            )}
-
-            {/* Keep the raw log visible after failure/completion for post-mortem tracing. */}
-            {(prepareConsole.length > 0 || runConsole.length > 0) && (
-              <div className="auto-page__glass-card auto-page__glass-card--done">
-                <LiveConsole
-                  lines={runConsole.length > 0 ? runConsole : prepareConsole}
+              )}
+              {fatalError && !workflowResult && (
+                <div className="auto-page__fatal">
+                  <span className="auto-page__fatal-icon">✗</span>
+                  {fatalError}
+                </div>
+              )}
+              {(prepareConsole.length > 0 || runConsole.length > 0) && (
+                <LiveConsole lines={runConsole.length > 0 ? runConsole : prepareConsole}
                   title={runConsole.length > 0 ? 'Workflow log' : 'Clone log'}
-                  defaultOpen={phase === 'error'}
-                />
-              </div>
-            )}
-
-            {workflowResult && (
-              <WorkflowResultCard result={workflowResult} onReset={handleReset} />
-            )}
-
-            {!workflowResult && (
-              <div className="auto-page__glass-card">
-                <button className="result-card__reset-btn" onClick={handleReset}>
-                  ↩ Start new workflow
-                </button>
-              </div>
-            )}
+                  defaultOpen={phase === 'error'} />
+              )}
+              {workflowResult && <WorkflowResultCard result={workflowResult} onReset={handleReset} />}
+              {!workflowResult && (
+                <button className="result-card__reset-btn" onClick={handleReset}>↩ Start new workflow</button>
+              )}
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

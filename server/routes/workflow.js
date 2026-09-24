@@ -57,6 +57,13 @@ const THEME_ICONS_REPO_URL = USE_DIRECT_GIT_HOST
 const LUZ_NEXT_REPO_URL    = USE_DIRECT_GIT_HOST
   ? 'git@bitbucket.org:axonivy-prod/luz_next.git'
   : 'git@bitbucket-nhut:axonivy-prod/luz_next.git';
+// Legacy klara_theme (Java EE) — the third deploy target. Overridable via
+// KLARA_THEME_REPO_URL in .env; set it to an empty string to skip this leg.
+const KLARA_THEME_REPO_URL = process.env.KLARA_THEME_REPO_URL !== undefined
+  ? process.env.KLARA_THEME_REPO_URL
+  : (USE_DIRECT_GIT_HOST
+    ? 'git@bitbucket.org:axonivy-prod/klara_theme.git'
+    : 'git@bitbucket-nhut:axonivy-prod/klara_theme.git');
 const THEME_SUBPATH        = path.join('libs', 'klara-theme');
 const MY_SETS_SUBPATH      = path.join('_Assets', 'my-sets');
 const MAX_CLONE_RETRIES    = 5;
@@ -161,7 +168,23 @@ async function prepareSession(id, onEvent) {
     throw err;
   }
 
-  const session = { id, root, themeIconsRoot, luzNextRoot, themePath, createdAt: Date.now(), indexes: {} };
+  // Clone klara_theme (legacy Java EE deploy target). Skipped entirely when
+  // KLARA_THEME_REPO_URL is empty so single-target setups incur no overhead.
+  let klaraThemeRoot = null;
+  if (KLARA_THEME_REPO_URL) {
+    klaraThemeRoot = path.join(root, 'klara_theme');
+    onEvent({ type: 'stage', id: 'clone-klara-theme', status: 'start', label: 'Cloning klara_theme' });
+    try {
+      await cloneWithRetry(KLARA_THEME_REPO_URL, klaraThemeRoot, 'clone-klara-theme', onEvent);
+      onEvent({ type: 'stage', id: 'clone-klara-theme', status: 'ok', label: 'Cloning klara_theme' });
+    } catch (err) {
+      onEvent({ type: 'stage', id: 'clone-klara-theme', status: 'error', label: 'Cloning klara_theme', detail: err.message });
+      fs.rmSync(root, { recursive: true, force: true });
+      throw err;
+    }
+  }
+
+  const session = { id, root, themeIconsRoot, luzNextRoot, klaraThemeRoot, themePath, createdAt: Date.now(), indexes: {} };
   sessions.set(id, session);
   return session;
 }
@@ -430,6 +453,9 @@ router.post('/run', (req, res) => {
     '--luz-next-root', session.luzNextRoot,
     '--skip-cleanup',   // the bridge server owns the session's lifecycle
   ];
+  if (session.klaraThemeRoot) {
+    argv.push('--klara-theme-root', session.klaraThemeRoot);
+  }
   for (const sel of selections) {
     const flag = sel.pipeline === 'icon' ? '--icon'
       : sel.pipeline === 'duotone' ? '--duotone'
@@ -496,7 +522,9 @@ router.post('/run', (req, res) => {
     // re-cloning/re-exporting, so we KEEP the session alive and tell the
     // client a manual "Retry push" is available.
     const pendingRepos = [];
-    for (const [label, root] of [['theme_icons', session.themeIconsRoot], ['luz_next', session.luzNextRoot]]) {
+    const repoTargets = [['theme_icons', session.themeIconsRoot], ['luz_next', session.luzNextRoot]];
+    if (session.klaraThemeRoot) repoTargets.push(['klara_theme', session.klaraThemeRoot]);
+    for (const [label, root] of repoTargets) {
       try {
         if (await localHasBranch(root, runBranchName) && !(await remoteHasBranch(root, runBranchName))) {
           pendingRepos.push({ label, root });
@@ -568,7 +596,7 @@ router.post('/retry-push', async (req, res) => {
   const prUrls = {};
 
   for (const { label, root } of repos) {
-    const stageId = `commit-${label === 'theme_icons' ? 'theme-icons' : 'luz-next'}`;
+    const stageId = `commit-${label === 'theme_icons' ? 'theme-icons' : label === 'luz_next' ? 'luz-next' : 'klara-theme'}`;
     write({ type: 'stage', id: stageId, status: 'start', label: `Pushing ${label}` });
     try {
       const result = await pushExistingBranch(

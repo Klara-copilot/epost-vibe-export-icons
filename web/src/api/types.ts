@@ -61,10 +61,12 @@ export interface WorkflowSelection {
 export type WorkflowStageId =
   | 'clone-theme-icons'
   | 'clone-luz-next'
+  | 'clone-klara-theme'
   | `audit-${'icon' | 'duotone' | 'illustration'}`
   | `export-${'icon' | 'duotone' | 'illustration'}`
   | 'commit-theme-icons'
   | 'commit-luz-next'
+  | 'commit-klara-theme'
   | 'cleanup'
   | 'system';
 
@@ -96,6 +98,8 @@ export interface WorkflowResult {
   branchName: string | null;
   luzNextPrUrl: string | null;
   luzNextBranchName: string | null;
+  klaraThemePrUrl: string | null;
+  klaraThemeBranchName: string | null;
   pipelines: {
     icon: WorkflowPipelineResult;
     duotone: WorkflowPipelineResult;

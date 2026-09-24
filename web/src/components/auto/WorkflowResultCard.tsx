@@ -66,7 +66,7 @@ export const WorkflowResultCard = memo(function WorkflowResultCard({ result, onR
       </div>
 
       {/* PR links */}
-      {(result.prUrl || result.luzNextPrUrl) && (
+      {(result.prUrl || result.luzNextPrUrl || result.klaraThemePrUrl) && (
         <div className="result-card__prs">
           <p className="result-card__pr-label">Open pull requests</p>
           {result.prUrl && (
@@ -80,6 +80,13 @@ export const WorkflowResultCard = memo(function WorkflowResultCard({ result, onR
             <a className="result-card__pr-link" href={result.luzNextPrUrl} target="_blank" rel="noopener noreferrer">
               <span className="result-card__pr-repo">luz_next</span>
               <span className="result-card__pr-branch">{result.luzNextBranchName}</span>
+              <span className="result-card__pr-arrow">→</span>
+            </a>
+          )}
+          {result.klaraThemePrUrl && (
+            <a className="result-card__pr-link" href={result.klaraThemePrUrl} target="_blank" rel="noopener noreferrer">
+              <span className="result-card__pr-repo">klara_theme</span>
+              <span className="result-card__pr-branch">{result.klaraThemeBranchName}</span>
               <span className="result-card__pr-arrow">→</span>
             </a>
           )}

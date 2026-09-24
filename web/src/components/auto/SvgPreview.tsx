@@ -68,12 +68,12 @@ export const SvgPreview = memo(function SvgPreview({ settings, sessionId, pipeli
 
   if (inline) {
     return svg
-      ? <span ref={elRef} className="svg-preview svg-preview--inline" style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />
-      : <span ref={elRef} className="svg-preview svg-preview--inline svg-preview--placeholder" style={{ width: size, height: size }} />;
+      ? <span ref={elRef} className="svg-preview svg-preview--inline" data-pipeline={pipeline} style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />
+      : <span ref={elRef} className="svg-preview svg-preview--inline svg-preview--placeholder" data-pipeline={pipeline} style={{ width: size, height: size }} />;
   }
 
   return (
-    <div ref={elRef} className="svg-preview" style={{ width: size, height: size }}>
+    <div ref={elRef} className="svg-preview" data-pipeline={pipeline} style={{ width: size, height: size }}>
       {svg
         ? <span dangerouslySetInnerHTML={{ __html: svg }} />
         : <span className="svg-preview__placeholder" />}

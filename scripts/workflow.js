@@ -30,6 +30,7 @@
  *   --red-bull                                Operate directly on real repos (no temp dirs).
  *                                             Requires PROJECT_ROOT (.env) to be set.
  *                                             Repos must be on 'master' with a clean tree.
+ *   --klara-theme-root <path>                 Pre-cloned klara_theme directory (skips fresh clone).
  *
  * Exit codes:
  *   0  — success (some icons may be in alreadyDone, that is not a failure)
@@ -45,6 +46,8 @@
  *     "branchName": "feature/export-icons-{ID}",
  *     "luzNextPrUrl": "...",
  *     "luzNextBranchName": "...",
+ *     "klaraThemePrUrl": "...",
+ *     "klaraThemeBranchName": "...",
  *     "pipelines": {
  *       "icon":         { "exported": ["Icon Name"], "alreadyDone": ["Other Icon"], "failed": [] },
  *       "duotone":      { "exported": [], "alreadyDone": [], "failed": [] },
@@ -101,6 +104,16 @@ const LUZ_NEXT_REPO_URL = USE_DIRECT_GIT_HOST
   : 'git@bitbucket-nhut:axonivy-prod/luz_next.git';
 // Relative path from luz_next root to the klara-theme package inside it.
 const THEME_SUBPATH     = path.join('libs', 'klara-theme');
+
+// Remote URL and local path for the legacy klara_theme Java EE project.
+// KLARA_THEME_REPO_URL defaults to the known URL; set to empty in .env to skip.
+const KLARA_THEME_REPO_URL = process.env.KLARA_THEME_REPO_URL !== undefined
+  ? process.env.KLARA_THEME_REPO_URL
+  : (USE_DIRECT_GIT_HOST
+    ? 'git@bitbucket.org:axonivy-prod/klara_theme.git'
+    : 'git@bitbucket-nhut:axonivy-prod/klara_theme.git');
+// Path to the real klara_theme on disk — required only for --red-bull mode.
+const KLARA_THEME_ROOT  = process.env.KLARA_THEME_ROOT || '';
 
 // nc-projects folder UUIDs (Nucleo 22-char hex format) per pipeline type.
 // These must exist as subdirectories in ${TEMP_ROOT}/nc-projects/.
@@ -171,8 +184,9 @@ function parseArgs() {
     gitEmail:   null,
     redBull:    false,
     jsonEvents: false,
-    workRoot:   null,
-    luzNextRoot: null,
+    workRoot:       null,
+    luzNextRoot:    null,
+    klaraThemeRoot: null,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -193,8 +207,9 @@ function parseArgs() {
       // Pre-cloned mode: repos are already on disk (e.g. cloned by the bridge
       // server's /api/workflow/prepare session). workflow.js then skips its
       // own clone step and operates directly on these paths.
-      case '--work-root':     result.workRoot    = next; i++; break;
-      case '--luz-next-root': result.luzNextRoot = next; i++; break;
+      case '--work-root':        result.workRoot       = next; i++; break;
+      case '--luz-next-root':    result.luzNextRoot    = next; i++; break;
+      case '--klara-theme-root': result.klaraThemeRoot = next; i++; break;
       default:
         // ignore unknown flags
         break;
@@ -226,6 +241,10 @@ function validateArgs(args) {
 
   if (args.luzNextRoot && !fs.existsSync(args.luzNextRoot)) {
     errors.push(`--luz-next-root path does not exist: ${args.luzNextRoot}`);
+  }
+
+  if (args.klaraThemeRoot && !fs.existsSync(args.klaraThemeRoot)) {
+    errors.push(`--klara-theme-root path does not exist: ${args.klaraThemeRoot}`);
   }
 
   if (args.redBull && !PRIMARY_REPO) {
@@ -443,16 +462,39 @@ async function cloneSiblingLuzNext(luzNextRoot, branchId) {
 function mirrorThemeFiles(srcThemePath, dstThemePath) {
   log.info(`Mirroring theme files → ${path.basename(dstThemePath)}`);
 
+  // public/assets/fonts/
   const srcFonts = path.join(srcThemePath, 'public', 'assets', 'fonts');
   const dstFonts = path.join(dstThemePath, 'public', 'assets', 'fonts');
   if (fs.existsSync(srcFonts)) {
     fs.mkdirSync(dstFonts, { recursive: true });
     fs.cpSync(srcFonts, dstFonts, { recursive: true });
-    log.ok('  fonts/ mirrored');
+    log.ok('  public/assets/fonts/ mirrored');
   } else {
     log.warn(`  fonts source not found: ${srcFonts}`);
   }
 
+  // src/lib/assets/fonts/ (second location written by export-icon.js)
+  const srcLibFonts = path.join(srcThemePath, 'src', 'lib', 'assets', 'fonts');
+  const dstLibFonts = path.join(dstThemePath, 'src', 'lib', 'assets', 'fonts');
+  if (fs.existsSync(srcLibFonts)) {
+    fs.mkdirSync(dstLibFonts, { recursive: true });
+    fs.cpSync(srcLibFonts, dstLibFonts, { recursive: true });
+    log.ok('  src/lib/assets/fonts/ mirrored');
+  }
+
+  // src/lib/assets/icons/*.svg (SVG sprites — duotone + illustration)
+  const srcIconSvgs = path.join(srcThemePath, 'src', 'lib', 'assets', 'icons');
+  const dstIconSvgs = path.join(dstThemePath, 'src', 'lib', 'assets', 'icons');
+  if (fs.existsSync(srcIconSvgs)) {
+    fs.mkdirSync(dstIconSvgs, { recursive: true });
+    const svgFiles = fs.readdirSync(srcIconSvgs).filter(f => f.endsWith('.svg'));
+    for (const fname of svgFiles) {
+      fs.copyFileSync(path.join(srcIconSvgs, fname), path.join(dstIconSvgs, fname));
+    }
+    if (svgFiles.length > 0) log.ok(`  src/lib/assets/icons/ mirrored (${svgFiles.length} SVG(s))`);
+  }
+
+  // src/lib/styles/core/icons/_icons-map.scss
   const scssRelPaths = [
     path.join('src', 'lib', 'styles', 'core', 'icons', '_icons-map.scss'),
     path.join('src', 'styles', 'core', 'icons', '_icons-map.scss'),
@@ -466,6 +508,111 @@ function mirrorThemeFiles(srcThemePath, dstThemePath) {
       log.ok('  _icons-map.scss mirrored');
       break;
     }
+  }
+}
+
+// ─── klara_theme mirror ───────────────────────────────────────────────────────
+
+/**
+ * Extract all icon name→code pairs from a SCSS map (any variable name).
+ * @returns {Map<string, string>}
+ */
+function extractScssIconEntries(content) {
+  const entries = new Map();
+  const re = /'([^']+)':\s*'([^']+)'/g;
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    entries.set(m[1], m[2]);
+  }
+  return entries;
+}
+
+/**
+ * Additive merge: copy new icon entries from srcPath ($streamline-icons in
+ * luz_next) into dstPath ($icons in klara_theme). Existing entries in dst are
+ * preserved; new ones are appended before the closing ); using the 4-space
+ * indent style used in klara_theme's _icons.scss.
+ */
+function mergeIconsToKlaraTheme(srcPath, dstPath) {
+  if (!fs.existsSync(srcPath)) { log.warn(`  SCSS source not found: ${srcPath}`); return; }
+  if (!fs.existsSync(dstPath)) { log.warn(`  SCSS target not found: ${dstPath}`); return; }
+
+  const srcContent = fs.readFileSync(srcPath, 'utf8');
+  const dstContent = fs.readFileSync(dstPath, 'utf8');
+
+  const srcEntries = extractScssIconEntries(srcContent);
+  const dstEntries = extractScssIconEntries(dstContent);
+
+  const newLines = [];
+  for (const [name, code] of srcEntries) {
+    if (!dstEntries.has(name)) {
+      newLines.push(`    '${name}': '${code}',`);
+    }
+  }
+
+  if (newLines.length === 0) {
+    log.ok('  _icons.scss: no new icons to merge');
+    return;
+  }
+
+  const closingIdx = dstContent.lastIndexOf(');');
+  if (closingIdx === -1) {
+    log.warn('  _icons.scss: could not find closing ); — skipping merge');
+    return;
+  }
+
+  const updated = dstContent.slice(0, closingIdx) + newLines.join('\n') + '\n' + dstContent.slice(closingIdx);
+  fs.writeFileSync(dstPath, updated, 'utf8');
+  log.ok(`  _icons.scss: ${newLines.length} new icon(s) merged`);
+}
+
+/**
+ * Mirror exported icon assets from a luz_next/libs/klara-theme source into the
+ * legacy klara_theme Java EE project:
+ *   - Streamline font files  → webContent/layouts/klara-theme/fonts/
+ *   - SVG sprites            → webContent/layouts/klara-theme/icons/
+ *   - SCSS icons map (merge) → .../layout/icons-font/_icons.scss
+ */
+function mirrorToKlaraTheme(srcThemePath, klaraThemeRoot) {
+  log.info(`Mirroring to klara_theme: ${path.basename(klaraThemeRoot)}`);
+
+  // Font files — streamline-icons-* only (leaves Roboto etc. untouched)
+  const srcFonts = path.join(srcThemePath, 'public', 'assets', 'fonts');
+  const dstFonts = path.join(klaraThemeRoot, 'webContent', 'layouts', 'klara-theme', 'fonts');
+  if (fs.existsSync(srcFonts) && fs.existsSync(dstFonts)) {
+    const fontFiles = fs.readdirSync(srcFonts).filter(f => f.startsWith('streamline-icons-'));
+    for (const fname of fontFiles) {
+      fs.copyFileSync(path.join(srcFonts, fname), path.join(dstFonts, fname));
+    }
+    log.ok(`  fonts: ${fontFiles.length} streamline font file(s) copied`);
+  } else {
+    if (!fs.existsSync(srcFonts)) log.warn(`  font source not found: ${srcFonts}`);
+    if (!fs.existsSync(dstFonts)) log.warn(`  font target not found: ${dstFonts}`);
+  }
+
+  // SCSS icons map — additive merge ($streamline-icons in luz_next → $icons in klara_theme)
+  const srcIconsMap = path.join(
+    srcThemePath, 'src', 'lib', 'styles', 'core', 'icons', '_icons-map.scss'
+  );
+  const dstIconsScss = path.join(
+    klaraThemeRoot, 'webContent', 'layouts', 'klara-theme',
+    'styles', 'sass', 'layout', 'icons-font', '_icons.scss'
+  );
+  mergeIconsToKlaraTheme(srcIconsMap, dstIconsScss);
+
+  // SVG sprites — streamline-*.svg only
+  const srcIconSvgs = path.join(srcThemePath, 'src', 'lib', 'assets', 'icons');
+  const dstIconSvgs = path.join(klaraThemeRoot, 'webContent', 'layouts', 'klara-theme', 'icons');
+  if (fs.existsSync(srcIconSvgs) && fs.existsSync(dstIconSvgs)) {
+    const svgFiles = fs.readdirSync(srcIconSvgs)
+      .filter(f => f.startsWith('streamline-') && f.endsWith('.svg'));
+    for (const fname of svgFiles) {
+      fs.copyFileSync(path.join(srcIconSvgs, fname), path.join(dstIconSvgs, fname));
+    }
+    log.ok(`  icons: ${svgFiles.length} SVG sprite(s) copied`);
+  } else {
+    if (!fs.existsSync(srcIconSvgs)) log.warn(`  SVG source not found: ${srcIconSvgs}`);
+    if (!fs.existsSync(dstIconSvgs)) log.warn(`  SVG target not found: ${dstIconSvgs}`);
   }
 }
 
@@ -653,8 +800,10 @@ async function main() {
     status:            'failed',
     prUrl:             null,
     branchName:        null,
-    luzNextPrUrl:      null,
-    luzNextBranchName: null,
+    luzNextPrUrl:       null,
+    luzNextBranchName:  null,
+    klaraThemePrUrl:    null,
+    klaraThemeBranchName: null,
     pipelines: {
       icon:         { exported: [], alreadyDone: [], failed: [] },
       duotone:      { exported: [], alreadyDone: [], failed: [] },
@@ -672,9 +821,10 @@ async function main() {
   const preCloned = Boolean(args.workRoot);
   const tempRoot  = path.join(os.tmpdir(), `theme_icons_${args.branchId}`);
   const workRoot  = args.redBull ? PRIMARY_REPO : (args.workRoot || tempRoot);
-  let siblingLuzNext = null;   // sibling clone path (normal mode only), for cleanup
-  let luzNextTempRoot = null;  // set when --json-events auto-clones luz_next fresh
-  let scssBeforeInfo = null;
+  let siblingLuzNext    = null;  // sibling clone path (normal mode only), for cleanup
+  let luzNextTempRoot   = null;  // set when --json-events auto-clones luz_next fresh
+  let siblingKlaraTheme = null;  // sibling clone path (normal mode only), for cleanup
+  let scssBeforeInfo    = null;
 
   // Resolve luz_next root + themePath, in priority order:
   //   1. --luz-next-root (pre-cloned mode; themePath derived from it)
@@ -711,6 +861,22 @@ async function main() {
     }
   }
 
+  // ── klara_theme resolution ─────────────────────────────────────────────────
+  // Priority: --klara-theme-root (pre-cloned) → KLARA_THEME_ROOT + --red-bull → clone fresh.
+  let klaraThemeRoot = null;
+  if (args.klaraThemeRoot) {
+    klaraThemeRoot = args.klaraThemeRoot;
+    log.info(`klara_theme root (pre-cloned): ${klaraThemeRoot}`);
+  } else if (args.redBull) {
+    if (KLARA_THEME_ROOT) {
+      klaraThemeRoot = KLARA_THEME_ROOT;
+      log.info(`klara_theme root (red-bull): ${klaraThemeRoot}`);
+    } else {
+      log.warn('KLARA_THEME_ROOT not set in .env — klara_theme deploy skipped for --red-bull');
+    }
+  }
+  // Normal mode: klaraThemeRoot stays null; Phase 4c clones from KLARA_THEME_REPO_URL.
+
   // Build list of export tasks (filters out empty pipelines)
   const exportTasks = buildExportTasks(args);
   const allExportedNames = [];  // accumulate all exported names across all pipelines
@@ -732,6 +898,11 @@ async function main() {
         log.section(`Phase 1b — Pull Latest (--red-bull | ${path.basename(luzNextRoot)})`);
         await guardCleanTree(luzNextRoot, 'luz_next');
         await pullLatestMaster(luzNextRoot);
+      }
+      if (!args.skipGit && klaraThemeRoot) {
+        log.section(`Phase 1c — Pull Latest (--red-bull | ${path.basename(klaraThemeRoot)})`);
+        await guardCleanTree(klaraThemeRoot, 'klara_theme');
+        await pullLatestMaster(klaraThemeRoot);
       }
     } else {
       emitStage('clone-theme-icons', 'start', 'Cloning theme_icons');
@@ -909,6 +1080,37 @@ async function main() {
 
     result.status = Object.values(result.pipelines).some(p => p.failed.length > 0) ? 'partial' : 'success';
 
+    // ── Phase 4c: Git (klara_theme) ───────────────────────────────────────────
+    // Red-bull without KLARA_THEME_ROOT: already warned during resolution — skip.
+    if (!args.skipGit && !(args.redBull && !klaraThemeRoot)) {
+      let ktRoot = klaraThemeRoot;  // null in normal mode
+      log.section('Phase 4c — Git Sync (klara_theme)');
+      emitStage('commit-klara-theme', 'start', 'Committing klara_theme');
+
+      // Normal mode: clone klara_theme fresh, then mirror into it.
+      if (!ktRoot) {
+        const cloneDir = path.join(os.tmpdir(), `klara_theme_${args.branchId}`);
+        if (fs.existsSync(cloneDir)) fs.rmSync(cloneDir, { recursive: true, force: true });
+        log.info(`Cloning ${KLARA_THEME_REPO_URL} → ${cloneDir}`);
+        await simpleGit().clone(KLARA_THEME_REPO_URL, cloneDir, ['--quiet']);
+        log.ok(`klara_theme clone ready: ${cloneDir}`);
+        ktRoot = cloneDir;
+        siblingKlaraTheme = cloneDir;
+      }
+
+      mirrorToKlaraTheme(args.themePath, ktRoot);
+      const ktResult = await gitCommitAndPush(
+        ktRoot, args.branchId, allExportedNames, 'icon', args.gitName, args.gitEmail,
+      );
+      if (ktResult) {
+        result.klaraThemeBranchName = ktResult.branchName;
+        result.klaraThemePrUrl      = ktResult.prUrl;
+        emitStage('commit-klara-theme', 'ok', 'Committing klara_theme', ktResult.branchName);
+      } else {
+        emitStage('commit-klara-theme', 'ok', 'Committing klara_theme', 'Nothing to commit');
+      }
+    }
+
     // ── Red-bull cleanup: checkout master on both repos ───────────────────
     if (args.redBull && !args.skipGit) {
       log.section('Phase 5 — Checkout master (--red-bull cleanup)');
@@ -926,6 +1128,14 @@ async function main() {
           log.warn(`Could not checkout master in ${path.basename(luzNextRoot)}: ${err.message}`);
         }
       }
+      if (klaraThemeRoot) {
+        try {
+          await simpleGit(klaraThemeRoot).checkout('master');
+          log.ok(`${path.basename(klaraThemeRoot)} → master`);
+        } catch (err) {
+          log.warn(`Could not checkout master in ${path.basename(klaraThemeRoot)}: ${err.message}`);
+        }
+      }
     }
 
   } catch (err) {
@@ -940,6 +1150,7 @@ async function main() {
         cleanup(tempRoot);
         if (siblingLuzNext) cleanup(siblingLuzNext);
         if (luzNextTempRoot) cleanup(luzNextTempRoot);
+        if (siblingKlaraTheme) cleanup(siblingKlaraTheme);
       }
       emitStage('cleanup', 'ok', 'Cleaning up');
       emit({ type: 'result', result });
@@ -949,6 +1160,7 @@ async function main() {
       if (!args.skipCleanup && !args.redBull) {
         cleanup(tempRoot);
         if (siblingLuzNext) cleanup(siblingLuzNext);
+        if (siblingKlaraTheme) cleanup(siblingKlaraTheme);
       }
     }
   }
