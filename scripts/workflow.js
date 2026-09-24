@@ -555,13 +555,22 @@ function mergeIconsToKlaraTheme(srcPath, dstPath) {
     return;
   }
 
-  const closingIdx = dstContent.lastIndexOf(');');
-  if (closingIdx === -1) {
-    log.warn('  _icons.scss: could not find closing ); — skipping merge');
+  // Anchor on the $icons map itself — the file also has `unicode($code);` in the
+  // @each loop after the map, so a bare lastIndexOf(');') lands inside the loop.
+  const mapStart = dstContent.search(/\$icons\s*:\s*\(/);
+  const closeMatch = mapStart === -1 ? null : /^[ \t]*\);/m.exec(dstContent.slice(mapStart));
+  if (!closeMatch) {
+    log.warn('  _icons.scss: could not find $icons map closing ); — skipping merge');
     return;
   }
+  const closingIdx = mapStart + closeMatch.index;
 
-  const updated = dstContent.slice(0, closingIdx) + newLines.join('\n') + '\n' + dstContent.slice(closingIdx);
+  // Last existing entry may lack a trailing comma; add one so the map stays valid.
+  let head = dstContent.slice(0, closingIdx);
+  const trimmed = head.trimEnd();
+  if (!trimmed.endsWith(',') && !trimmed.endsWith('(')) head = trimmed + ',\n';
+
+  const updated = head + newLines.join('\n') + '\n' + dstContent.slice(closingIdx);
   fs.writeFileSync(dstPath, updated, 'utf8');
   log.ok(`  _icons.scss: ${newLines.length} new icon(s) merged`);
 }
